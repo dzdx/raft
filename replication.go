@@ -58,10 +58,9 @@ func (r *RaftNode) syncReplication(p *Progress) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	resp, err = r.transport.AppendEntries(ctx, p.serverID, req)
-	r.logger.Debugf("replication logs [:%d] to %s", req.Entries[len(req.Entries)-1].Index, p.serverID)
 	cancel()
 	if err != nil {
-		r.logger.Errorf("replication log to %s failed: %s", p.serverID, err.Error())
+		r.logger.Errorf("replicate log to %s failed: %s", p.serverID, err.Error())
 		return
 	}
 	if resp.Term > r.getCurrentTerm() {
@@ -71,7 +70,10 @@ func (r *RaftNode) syncReplication(p *Progress) {
 	if resp.Success {
 		p.lastContact = time.Now()
 		if len(req.Entries) > 0 {
-			p.commitment.SetMatchIndex(p.serverID, req.Entries[len(req.Entries)-1].Index)
+			lastEntry := req.Entries[len(req.Entries)-1]
+			p.commitment.SetMatchIndex(p.serverID, lastEntry.Index)
+			p.nextIndex = lastEntry.Index + 1
+			r.logger.Debugf("replicated logs [:%d] to %s", lastEntry.Index, p.serverID)
 		}
 	} else {
 		p.nextIndex = util.MinUint64(p.nextIndex-1, resp.LastLogIndex+1)

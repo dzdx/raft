@@ -101,12 +101,12 @@ func (n *Node) Shutdown() {
 }
 
 func (n *Node) registerHandlers() {
-	leaderGroup := n.router.Group("/")
-	leaderGroup.Use(n.redirectToLeader)
+	requireLeader := n.router.Group("/")
+	requireLeader.Use(n.redirectToLeader)
 	{
-		leaderGroup.PUT("/kv/:key", n.putKey)
-		leaderGroup.DELETE("/kv/:key", n.deleteKey)
-		leaderGroup.POST("/", n.confChange)
+		requireLeader.PUT("/kv/:key", n.putKey)
+		requireLeader.DELETE("/kv/:key", n.deleteKey)
+		requireLeader.POST("/", n.confChange)
 	}
 	n.router.GET("/kv/:key", n.getKey)
 }

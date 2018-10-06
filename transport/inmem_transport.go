@@ -7,11 +7,11 @@ import (
 	"math/rand"
 )
 
-type Network struct {
+type InmemNetwork struct {
 	transports map[string]*InmemTransport
 }
 
-func NewNetwork(servers []string) *Network {
+func NewInmemNetwork(servers []string) *InmemNetwork {
 	num := len(servers)
 	transports := make(map[string]*InmemTransport, num)
 	for i := 0; i < num; i++ {
@@ -24,24 +24,24 @@ func NewNetwork(servers []string) *Network {
 			}
 		}
 	}
-	return &Network{transports: transports}
+	return &InmemNetwork{transports: transports}
 }
 
-func (n *Network) GetTrans(serverID string) *InmemTransport {
+func (n *InmemNetwork) GetTrans(serverID string) *InmemTransport {
 	return n.transports[serverID]
 }
-func (n *Network) SetPartition(partitions ...[]string) {
+func (n *InmemNetwork) SetPartition(partitions ...[]string) {
 	logger.Infof("set network partition %v ", partitions)
 	for i, part1 := range partitions {
 		for j, part2 := range partitions {
 			for _, server1 := range part1 {
 				for _, server2 := range part2 {
 					if i != j {
-						n.transports[server1].SetReliability(server2, 0, 0)
-						n.transports[server2].SetReliability(server1, 0, 0)
+						n.transports[server1].SetReliability(server2, 0.0, 0.0)
+						n.transports[server2].SetReliability(server1, 0.0, 0.0)
 					} else {
-						n.transports[server1].SetReliability(server2, 1, 1)
-						n.transports[server2].SetReliability(server1, 1, 1)
+						n.transports[server1].SetReliability(server2, 1.0, 1.0)
+						n.transports[server2].SetReliability(server1, 1.0, 1.0)
 					}
 				}
 			}
@@ -71,6 +71,8 @@ type InmemTransport struct {
 
 func (t *InmemTransport) Connect(trans *InmemTransport) {
 	t.conns[trans.localID] = trans
+	t.sendReliability[trans.localID] = 1.0
+	t.recvReliability[trans.localID] = 1.0
 }
 
 func (t *InmemTransport) RecvRPC() <-chan *RPC {

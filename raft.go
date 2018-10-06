@@ -10,6 +10,11 @@ import (
 	"github.com/dzdx/raft/util"
 	"context"
 	"github.com/sirupsen/logrus"
+	"errors"
+)
+
+var (
+	ErrNotLeader = errors.New("not leader")
 )
 
 type leaderState struct {
@@ -76,6 +81,8 @@ func (r *RaftNode) runFollower() {
 			return
 		case rpc := <-r.transport.RecvRPC():
 			r.processRPC(rpc)
+		case future := <-r.applyCh:
+			future.Respond(nil, ErrNotLeader)
 		}
 	}
 }
@@ -162,7 +169,7 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 	}
 
 	if req.LeaderCommitIndex > 0 {
-		r.commitTo(req.LeaderCommitIndex)
+		r.commitTo(util.MinUint64(req.LeaderCommitIndex, r.lastLogIndex))
 	}
 
 	r.setState(Follower)
@@ -266,6 +273,8 @@ func (r *RaftNode) runCandidate() {
 			r.processRPC(rpc)
 		case <-time.After(util.RandomDuration(r.config.ElectionTimeout)):
 			return
+		case future := <-r.applyCh:
+			future.Respond(nil, ErrNotLeader)
 		}
 	}
 }
@@ -316,6 +325,9 @@ func (r *RaftNode) leaderCtx() func() {
 	return func() {
 		r.leaderState.cancelFunc()
 		r.leaderState.waitGroup.Wait()
+		for _, future := range r.leaderState.inflightingFutures {
+			future.Respond(nil, ErrNotLeader)
+		}
 		r.leaderState = nil
 	}
 }
@@ -373,9 +385,7 @@ func (r *RaftNode) runLeader() {
 }
 
 func (r *RaftNode) commitTo(toIndex uint64) {
-	r.logger.Debugf("log entry %d committed", toIndex)
-	r.commitIndex = toIndex
-	for index := util.MaxUint64(r.lastApplied, 1); index <= r.commitIndex; index++ {
+	for index := util.MaxUint64(r.commitIndex+1, 1); index <= toIndex; index++ {
 		entry, err := r.entryStore.GetEntry(index)
 		if err != nil {
 			r.logger.Errorf("get entry failed: %s", err.Error())
@@ -402,6 +412,10 @@ func (r *RaftNode) commitTo(toIndex uint64) {
 				return
 			}
 		}
+
+		r.commitIndex = index
+		r.logger.Debugf("log entry %d committed", index)
+
 		select {
 		case r.appliedCh <- indexFuture:
 		case <-r.ctx.Done():
@@ -418,8 +432,8 @@ func (r *RaftNode) runProcessApplied() {
 		case indexFuture := <-r.appliedCh:
 			index := indexFuture.Index
 			respWithError := <-indexFuture.Response()
-			r.logger.Debugf("log entry %d applied", index)
 			r.lastApplied = index
+			r.logger.Debugf("log entry %d applied", index)
 
 			if r.leaderState != nil {
 				r.mutex.Lock()

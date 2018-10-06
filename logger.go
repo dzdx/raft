@@ -2,69 +2,17 @@ package raft
 
 import (
 	"github.com/sirupsen/logrus"
-	"github.com/x-cray/logrus-prefixed-formatter"
 	"os"
-	"runtime"
+	"github.com/dzdx/raft/logging"
+	"github.com/x-cray/logrus-prefixed-formatter"
 	"fmt"
-	"strings"
+	"bytes"
 )
 
-type filenameHook struct{}
-
-func findCaller(skip int) (string, string, int) {
-	var (
-		pc       uintptr
-		file     string
-		function string
-		line     int
-	)
-	for i := 0; i < 10; i++ {
-		pc, file, line = getCaller(skip + i)
-		if !strings.HasPrefix(file, "logrus/") && !strings.HasPrefix(file, "logrus@") {
-			break
-		}
-	}
-	if pc != 0 {
-		frames := runtime.CallersFrames([]uintptr{pc})
-		frame, _ := frames.Next()
-		function = frame.Function
-	}
-
-	return file, function, line
-}
-
-func getCaller(skip int) (uintptr, string, int) {
-	pc, file, line, ok := runtime.Caller(skip)
-	if !ok {
-		return 0, "", 0
-	}
-
-	n := 0
-	for i := len(file) - 1; i > 0; i-- {
-		if file[i] == '/' {
-			n += 1
-			if n >= 2 {
-				file = file[i+1:]
-				break
-			}
-		}
-	}
-	return pc, file, line
-}
-
-func (hook filenameHook) Levels() []logrus.Level {
-	return []logrus.Level{logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel}
-}
-
-func (hook filenameHook) Fire(entry *logrus.Entry) error {
-	file, _, line := findCaller(5)
-	entry.Data["source"] = fmt.Sprintf("%s:%d", file, line)
-	return nil
-}
-
 type raftStateHook struct {
-	termGetter func() uint64
-	nodeGetter func() string
+	termGetter  func() uint64
+	nodeGetter  func() string
+	stateGetter func() string
 }
 
 func (hook raftStateHook) Levels() []logrus.Level {
@@ -72,15 +20,23 @@ func (hook raftStateHook) Levels() []logrus.Level {
 }
 
 func (hook raftStateHook) Fire(entry *logrus.Entry) error {
-	entry.Data["node"] = hook.nodeGetter()
-	entry.Data["term"] = hook.termGetter()
+	var buf bytes.Buffer
+	if prefix, ok := entry.Data["prefix"]; ok {
+		buf.WriteString(prefix.(string))
+	}
+	raftPrefix := fmt.Sprintf("n%-2s Term:%-3d %-12s", hook.nodeGetter(), hook.termGetter(), hook.stateGetter())
+	buf.WriteString(raftPrefix)
+	entry.Data["prefix"] = buf.String()
 	return nil
 }
 
 func (r *RaftNode) setupLogger() {
-	formatter := &prefixed.TextFormatter{}
-	formatter.TimestampFormat = "2006-01-02 15:04:05.000"
-	formatter.FullTimestamp = true
+	formatter := &prefixed.TextFormatter{
+		ForceFormatting: true,
+		TimestampFormat: "2006-01-02 15:04:05.000",
+		FullTimestamp:   true,
+	}
+	formatter.SetColorScheme(&prefixed.ColorScheme{TimestampStyle: "green"})
 
 	logger := logrus.New()
 	if r.config.VerboseLog {
@@ -98,8 +54,15 @@ func (r *RaftNode) setupLogger() {
 		nodeGetter: func() string {
 			return r.localID
 		},
+		stateGetter: func() string {
+			return map[State]string{
+				Follower:  "follower",
+				Candidate: "candidate",
+				Leader:    "leader",
+			}[r.state]
+		},
 	}
-	logger.AddHook(&filenameHook{})
+	logger.AddHook(&logging.FilenameHook{})
 	logger.AddHook(stateHook)
 	r.logger = logger
 }

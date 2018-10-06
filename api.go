@@ -9,7 +9,7 @@ import (
 func DefaultConfig(servers []string, localID string) RaftConfig {
 	return RaftConfig{
 		MaxInflightingEntries: 2048,
-		MaxBatchAppendEntries: 256,
+		MaxBatchAppendEntries: 64,
 		ElectionTimeout:       300 * time.Millisecond,
 		Servers:               servers,
 		LocalID:               localID,
