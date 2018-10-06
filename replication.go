@@ -66,6 +66,7 @@ func (r *RaftNode) runLogReplication(p *Progress) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			resp, err = r.transport.AppendEntries(ctx, p.serverID, req)
+			r.logger.Debugf("replication logs [:%d] to %s", req.Entries[len(req.Entries)-1].Index, p.serverID)
 			cancel()
 			if err != nil {
 			} else {

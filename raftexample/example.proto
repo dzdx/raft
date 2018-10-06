@@ -1,0 +1,13 @@
+syntax = "proto3";
+package examplepb;
+
+
+message KV {
+    string key = 1;
+    string value = 2;
+    enum OpType {
+        OpPut = 0;
+        OpDelete = 1;
+    }
+    OpType opType = 3;
+}

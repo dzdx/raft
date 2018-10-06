@@ -27,6 +27,7 @@ type RaftConfig struct {
 	ElectionTimeout       time.Duration
 	Servers               []string
 	LocalID               string
+	VerboseLog            bool
 }
 
 type RaftNode struct {
@@ -449,6 +450,8 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 		r.mutex.Unlock()
 
 		entries[i] = entry
+
+		r.logger.Debugf("dispatch log %d", entry.Index)
 	}
 	if err := r.entryStore.AppendEntries(entries); err != nil {
 		r.logger.Errorf("append entries failed: %s", err.Error())
@@ -458,6 +461,7 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 	if len(entries) > 0 {
 		lastLog := entries[len(entries)-1]
 		r.setLastLog(lastLog.Term, lastLog.Index)
+		r.leaderState.commitment.SetMatchIndex(r.localID, lastLog.Index)
 	}
 	for _, p := range r.leaderState.followers {
 		p.notify()

@@ -83,7 +83,11 @@ func (r *RaftNode) setupLogger() {
 	formatter.FullTimestamp = true
 
 	logger := logrus.New()
-	logger.SetLevel(logrus.InfoLevel)
+	if r.config.VerboseLog {
+		logger.SetLevel(logrus.DebugLevel)
+	} else {
+		logger.SetLevel(logrus.InfoLevel)
+	}
 	logger.SetFormatter(formatter)
 	logger.SetOutput(os.Stdout)
 

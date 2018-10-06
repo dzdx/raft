@@ -13,6 +13,7 @@ func DefaultConfig(servers []string, localID string) RaftConfig {
 		ElectionTimeout:       300 * time.Millisecond,
 		Servers:               servers,
 		LocalID:               localID,
+		VerboseLog:            false,
 	}
 }
 
