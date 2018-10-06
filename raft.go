@@ -48,6 +48,8 @@ type RaftNode struct {
 	transport  transport.ITransport
 
 	logger *logrus.Logger
+
+	electionTimer <-chan time.Time
 }
 
 func (r *RaftNode) Shutdown() {
@@ -56,18 +58,19 @@ func (r *RaftNode) Shutdown() {
 	r.waitGroup.Wait()
 }
 
+func (r *RaftNode) resetElectionTimer() {
+	r.electionTimer = time.After(util.RandomDuration(r.config.ElectionTimeout))
+}
+
 func (r *RaftNode) runFollower() {
 	r.logger.Info("become follower")
-	electionTimeout := time.After(util.RandomDuration(r.config.ElectionTimeout))
+	r.resetElectionTimer()
 	for r.state == Follower {
 		select {
-		case <-electionTimeout:
-			electionTimeout = time.After(util.RandomDuration(r.config.ElectionTimeout))
-			if time.Now().Sub(r.lastContactLeader) > r.config.ElectionTimeout {
-				r.leader = None
-				r.setState(Candidate)
-				return
-			}
+		case <-r.electionTimer:
+			r.leader = None
+			r.setState(Candidate)
+			return
 		case <-r.ctx.Done():
 			return
 		case rpc := <-r.transport.RecvRPC():
@@ -103,7 +106,6 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 		r.setCurrentTerm(req.Term)
 	}
 	if req.PrevLogIndex > 0 {
-		// no heartbeat
 		if req.PrevLogIndex > r.lastLogIndex {
 			return
 		}
@@ -117,8 +119,6 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 			return
 		}
 	}
-	r.setState(Follower)
-	r.setLastContactLeader(req.LeaderID)
 
 	if len(req.Entries) > 0 {
 		newStart := 0
@@ -163,6 +163,10 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 	if req.LeaderCommitIndex > 0 {
 		r.commitTo(req.LeaderCommitIndex)
 	}
+
+	r.setState(Follower)
+	r.setLastContactLeader(req.LeaderID)
+	r.resetElectionTimer()
 	resp.Success = true
 }
 
@@ -243,7 +247,6 @@ func (r *RaftNode) quorumNodeSize() int {
 func (r *RaftNode) runCandidate() {
 	r.logger.Info("become candidate")
 	respChan := r.startElection()
-	electionTimeout := time.After(util.RandomDuration(r.config.ElectionTimeout))
 	votes := 0
 	needVotes := r.quorumNodeSize()
 	for r.state == Candidate {
@@ -260,7 +263,7 @@ func (r *RaftNode) runCandidate() {
 			}
 		case rpc := <-r.transport.RecvRPC():
 			r.processRPC(rpc)
-		case <-electionTimeout:
+		case <-time.After(util.RandomDuration(r.config.ElectionTimeout)):
 			return
 		}
 	}
@@ -493,8 +496,8 @@ func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.IT
 			servers: servers,
 			leader:  None,
 		},
+		config: config,
 
-		config:      config,
 		applyCh:     make(chan *ApplyFuture, config.MaxInflightingEntries),
 		committedCh: make(chan *DataFuture, config.MaxInflightingEntries),
 		appliedCh:   make(chan *IndexFuture, config.MaxInflightingEntries),
