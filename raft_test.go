@@ -71,7 +71,7 @@ func TestElectionNoLeader(t *testing.T) {
 	assert.Equal(t, leaderCount, 0)
 }
 
-func TestReElectionLeader(t *testing.T) {
+func TestLeaderLeaseAndReElectionLeader(t *testing.T) {
 	var inmemServers = []string{
 		"1", "2", "3",
 	}
@@ -85,13 +85,16 @@ func TestReElectionLeader(t *testing.T) {
 		}
 	}
 	otherPartition := make([]string, 0)
-	for ID, _ := range nodes {
+	for ID := range nodes {
 		if ID != currentLeader {
 			otherPartition = append(otherPartition, ID)
 		}
 	}
 	network.SetPartition([]string{currentLeader}, otherPartition)
 	time.Sleep(1 * time.Second)
+
+	assert.NotEqual(t, nodes[currentLeader].state, Leader)
+
 	leaderCount := 0
 	for _, ID := range otherPartition {
 		if nodes[ID].state == Leader {
