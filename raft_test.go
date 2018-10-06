@@ -122,3 +122,26 @@ func TestAppendEntries(t *testing.T) {
 		assert.Equal(t, resp, "success")
 	}
 }
+
+func TestFollowerCommitInShortTime(t *testing.T) {
+	var inmemServers = []string{
+		"1", "2", "3",
+	}
+	_, nodes := newTestCluster(inmemServers)
+	time.Sleep(1 * time.Second)
+	var leader *RaftNode
+	for ID, node := range nodes {
+		if node.state == Leader {
+			leader = nodes[ID]
+			break
+		}
+	}
+	for i := 0; i < 10; i++ {
+		leader.Apply(context.Background(), []byte("hello world"))
+	}
+	time.Sleep(50 * time.Millisecond)
+	for _, node := range nodes {
+		assert.Equal(t, leader.commitIndex, node.commitIndex)
+		assert.Equal(t, leader.lastApplied, node.lastApplied)
+	}
+}

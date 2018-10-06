@@ -48,39 +48,43 @@ func (r *RaftNode) runHeartbeat(p *Progress) {
 	}
 }
 
+func (r *RaftNode) syncReplication(p *Progress) {
+	var req *raftpb.AppendEntriesReq
+	var resp *raftpb.AppendEntriesResp
+	var err error
+	if req, err = r.setupAppendEntriesReq(p); err != nil {
+		r.logger.Errorf("setup append entries failed: %s", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	resp, err = r.transport.AppendEntries(ctx, p.serverID, req)
+	r.logger.Debugf("replication logs [:%d] to %s", req.Entries[len(req.Entries)-1].Index, p.serverID)
+	cancel()
+	if err != nil {
+		r.logger.Errorf("replication log to %s failed: %s", p.serverID, err.Error())
+		return
+	}
+	if resp.Term > r.getCurrentTerm() {
+		r.setCurrentTerm(resp.Term)
+		r.stepdown()
+	}
+	if resp.Success {
+		p.lastContact = time.Now()
+		if len(req.Entries) > 0 {
+			p.commitment.SetMatchIndex(p.serverID, req.Entries[len(req.Entries)-1].Index)
+		}
+	} else {
+		p.nextIndex = util.MinUint64(p.nextIndex-1, resp.LastLogIndex+1)
+	}
+}
+
 func (r *RaftNode) runLogReplication(p *Progress) {
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
 		case <-p.notifyCh:
-			var req *raftpb.AppendEntriesReq
-			var resp *raftpb.AppendEntriesResp
-			var err error
-			if req, err = r.setupAppendEntriesReq(p); err != nil {
-				r.logger.Errorf("setup append entries failed: %s", err.Error())
-				continue
-			}
-			if len(req.Entries) == 0 {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			resp, err = r.transport.AppendEntries(ctx, p.serverID, req)
-			r.logger.Debugf("replication logs [:%d] to %s", req.Entries[len(req.Entries)-1].Index, p.serverID)
-			cancel()
-			if err != nil {
-			} else {
-				if resp.Term > r.getCurrentTerm() {
-					r.setCurrentTerm(resp.Term)
-					r.stepdown()
-				}
-				if resp.Success {
-					p.lastContact = time.Now()
-					p.commitment.SetMatchIndex(p.serverID, req.Entries[len(req.Entries)-1].Index)
-				} else {
-					p.nextIndex = util.MinUint64(p.nextIndex-1, resp.LastLogIndex+1)
-				}
-			}
+			r.syncReplication(p)
 		}
 	}
 }

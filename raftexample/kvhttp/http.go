@@ -10,12 +10,14 @@ import (
 	"github.com/dzdx/raft/store"
 	"github.com/dzdx/raft/transport"
 	"github.com/dzdx/raft/util/wait"
+	"net/url"
 )
 
 type Node struct {
 	http      *http.Server
 	router    *gin.Engine
 	kvstore   *KvStore
+	raftNode  *raft.RaftNode
 	config    NodeConfig
 	waitGroup wait.Group
 }
@@ -68,6 +70,24 @@ func (n *Node) confChange(c *gin.Context) {
 
 }
 
+func (n *Node) redirectToLeader(c *gin.Context) {
+	leaderID := n.raftNode.GetLeader()
+	if leaderID == raft.None {
+		c.String(http.StatusInternalServerError, "no leader")
+		c.Abort()
+		return
+	}
+	if leaderID != n.config.LocalID {
+		u, _ := url.Parse("")
+		u.Scheme = "http"
+		u.Path = c.Request.URL.Path
+		u.Host = n.config.Webaddrs[leaderID]
+		c.Redirect(http.StatusTemporaryRedirect, u.String())
+		c.Abort()
+		return
+	}
+}
+
 func (n *Node) Run() {
 	n.waitGroup.Start(n.kvstore.run)
 	if err := n.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -81,10 +101,14 @@ func (n *Node) Shutdown() {
 }
 
 func (n *Node) registerHandlers() {
+	leaderGroup := n.router.Group("/")
+	leaderGroup.Use(n.redirectToLeader)
+	{
+		leaderGroup.PUT("/kv/:key", n.putKey)
+		leaderGroup.DELETE("/kv/:key", n.deleteKey)
+		leaderGroup.POST("/", n.confChange)
+	}
 	n.router.GET("/kv/:key", n.getKey)
-	n.router.PUT("/kv/:key", n.putKey)
-	n.router.DELETE("/kv/:key", n.deleteKey)
-	n.router.POST("/", n.confChange)
 }
 
 type NodeConfig struct {
@@ -123,10 +147,12 @@ func NewNode(config NodeConfig) *Node {
 	raftNode := newRaftNode(config)
 	kvstore := newKvStore(raftNode)
 	node := &Node{
+		config:    config,
 		http:      srv,
 		router:    router,
 		kvstore:   kvstore,
 		waitGroup: wait.Group{},
+		raftNode:  raftNode,
 	}
 	node.registerHandlers()
 	return node

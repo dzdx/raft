@@ -367,6 +367,7 @@ func (r *RaftNode) runLeader() {
 			r.dispatch(futures)
 		case <-r.leaderState.commitment.commitCh:
 			r.commitTo(r.leaderState.commitment.commitIndex)
+			r.notifyFollowers()
 		}
 	}
 }
@@ -463,6 +464,10 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 		r.setLastLog(lastLog.Term, lastLog.Index)
 		r.leaderState.commitment.SetMatchIndex(r.localID, lastLog.Index)
 	}
+	r.notifyFollowers()
+}
+
+func (r *RaftNode) notifyFollowers() {
 	for _, p := range r.leaderState.followers {
 		p.notify()
 	}

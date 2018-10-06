@@ -43,5 +43,6 @@ func (r *RaftNode) CommittedChan() <-chan *DataFuture {
 	return r.committedCh
 }
 
-func (r *RaftNode) GetLeader() {
+func (r *RaftNode) GetLeader() string {
+	return r.leader
 }

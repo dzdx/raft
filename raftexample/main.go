@@ -9,9 +9,9 @@ func main() {
 		"3": "127.0.0.1:9083",
 	}
 	webAddrs := map[string]string{
-		"1": ":8081",
-		"2": ":8082",
-		"3": ":8083",
+		"1": "127.0.0.1:8081",
+		"2": "127.0.0.1:8082",
+		"3": "127.0.0.1:8083",
 	}
 	for ID := range raftAddrs {
 		config := kvhttp.NodeConfig{
