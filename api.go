@@ -46,3 +46,7 @@ func (r *RaftNode) CommittedChan() <-chan *DataFuture {
 func (r *RaftNode) GetLeader() string {
 	return r.leader
 }
+
+func (r *RaftNode)CheckQuit()<-chan struct{}{
+	return r.ctx.Done()
+}

@@ -7,7 +7,7 @@ import (
 
 const maxBatchApply = 64
 
-func splitToFutures(entry *raftpb.LogEntry) (*DataFuture, *IndexFuture) {
+func entryToFutures(entry *raftpb.LogEntry) (*DataFuture, *IndexFuture) {
 	respChan := make(chan *RespWithError, 1)
 	dataFuture := &DataFuture{
 		Data: entry.Data,
@@ -46,7 +46,7 @@ func (r *RaftNode) runFSM() {
 			batchApply:
 				for i < count {
 					entry := entries[i]
-					dataFuture, indexFuture := splitToFutures(entry)
+					dataFuture, indexFuture := entryToFutures(entry)
 					select {
 					case r.committedCh <- dataFuture:
 					default:
@@ -64,7 +64,10 @@ func (r *RaftNode) runFSM() {
 						r.lastApplied = index
 						if r.leaderState != nil {
 							// leader respond request
+							r.mutex.Lock()
 							reqFuture, ok := r.leaderState.inflightingFutures[index]
+							r.mutex.Unlock()
+
 							if ok {
 								reqFuture.Respond(resp.Resp, resp.Err)
 

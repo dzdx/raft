@@ -9,32 +9,33 @@ import (
 	"context"
 	"strconv"
 	"github.com/dzdx/raft/util/wait"
+	"os"
 )
+
+func testcaseCtx() func() {
+	return func() {
+		os.Stderr.Sync()
+		os.Stdout.Sync()
+	}
+}
 
 func newTestCluster(servers []string) (*transport.InmemNetwork, map[string]*RaftNode) {
 	network := transport.NewInmemNetwork(servers)
 	nodes := make(map[string]*RaftNode, len(servers))
 	for _, ID := range servers {
 		config := DefaultConfig(servers, ID)
-		config.VerboseLog = true
+		config.VerboseLog = false
 		storage := store.NewInmemStore()
 		trans := network.GetTrans(ID)
 		node := NewRaftNode(config, storage, trans)
 		time.Sleep(100 * time.Millisecond)
 		go func() {
 			for {
-				futures := make([]*DataFuture, 0)
-			batchRecv:
-				for {
-					select {
-					case future := <-node.CommittedChan():
-						futures = append(futures, future)
-					default:
-						break batchRecv
-					}
-				}
-				for _, f := range futures {
-					f.Respond(f.Data, nil)
+				select {
+				case future := <-node.CommittedChan():
+					future.Respond(future.Data, nil)
+				case <-node.CheckQuit():
+					return
 				}
 			}
 		}()
@@ -52,7 +53,16 @@ func getLeaderNode(nodes map[string]*RaftNode) *RaftNode {
 	return nil
 }
 
+func shutdownNodes(nodes map[string]*RaftNode) {
+	wg := wait.Group{}
+	for _, node := range nodes {
+		wg.Start(node.Shutdown)
+	}
+	wg.Wait()
+}
+
 func TestElectionLeader(t *testing.T) {
+	defer testcaseCtx()()
 
 	var inmemServers = []string{
 		"1", "2", "3",
@@ -66,9 +76,12 @@ func TestElectionLeader(t *testing.T) {
 		}
 	}
 	assert.Equal(t, leaderCount, 1)
+	shutdownNodes(nodes)
 }
 
 func TestElectionNoLeader(t *testing.T) {
+	defer testcaseCtx()()
+
 	var inmemServers = []string{
 		"1", "2", "3",
 	}
@@ -82,9 +95,13 @@ func TestElectionNoLeader(t *testing.T) {
 		}
 	}
 	assert.Equal(t, leaderCount, 0)
+	shutdownNodes(nodes)
 }
 
 func TestLeaderLeaseAndReElectionLeader(t *testing.T) {
+
+	defer testcaseCtx()()
+
 	var inmemServers = []string{
 		"1", "2", "3",
 	}
@@ -110,9 +127,11 @@ func TestLeaderLeaseAndReElectionLeader(t *testing.T) {
 		}
 	}
 	assert.Equal(t, leaderCount, 1)
+	shutdownNodes(nodes)
 }
 
 func TestAppendEntries(t *testing.T) {
+	defer testcaseCtx()()
 	var inmemServers = []string{
 		"1", "2", "3",
 	}
@@ -125,9 +144,30 @@ func TestAppendEntries(t *testing.T) {
 		assert.Equal(t, resp, source)
 		assert.Equal(t, err, nil)
 	}
+	shutdownNodes(nodes)
+}
+
+func TestNetworkPartitionAppendEntries(t *testing.T) {
+	defer testcaseCtx()()
+
+	var inmemServers = []string{
+		"1", "2", "3",
+	}
+	network, nodes := newTestCluster(inmemServers)
+	network.SetPartition([]string{"1"}, []string{"2", "3"})
+	time.Sleep(1 * time.Second)
+	leader := getLeaderNode(nodes)
+	for i := 0; i < 1000; i++ {
+		source := []byte(strconv.Itoa(i))
+		resp, err := leader.Apply(context.Background(), source)
+		assert.Equal(t, resp, source)
+		assert.Equal(t, err, nil)
+	}
+	shutdownNodes(nodes)
 }
 
 func TestConcurrentAppendEntries(t *testing.T) {
+	defer testcaseCtx()()
 	var inmemServers = []string{
 		"1", "2", "3",
 	}
@@ -144,9 +184,11 @@ func TestConcurrentAppendEntries(t *testing.T) {
 		})
 	}
 	waitGroup.Wait()
+	shutdownNodes(nodes)
 }
 
 func TestFollowerCommitInShortTime(t *testing.T) {
+	defer testcaseCtx()()
 	var inmemServers = []string{
 		"1", "2", "3",
 	}
@@ -164,9 +206,11 @@ func TestFollowerCommitInShortTime(t *testing.T) {
 		assert.Equal(t, leader.commitIndex, node.commitIndex)
 		assert.Equal(t, leader.lastApplied, node.lastApplied)
 	}
+	shutdownNodes(nodes)
 }
 
 func TestTriggerSnapshot(t *testing.T) {
+	defer testcaseCtx()()
 	var inmemServers = []string{
 		"1", "2", "3",
 	}
@@ -178,4 +222,5 @@ func TestTriggerSnapshot(t *testing.T) {
 		assert.Equal(t, resp, []byte("1"))
 		assert.Equal(t, err, nil)
 	}
+	shutdownNodes(nodes)
 }
