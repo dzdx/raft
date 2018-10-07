@@ -24,6 +24,7 @@ type leaderState struct {
 	followers          map[string]*Progress
 	waitGroup          wait.Group
 	inflightingFutures map[uint64]*ApplyFuture
+	dispatchedIndex    uint64
 }
 
 type RaftNode struct {
@@ -314,6 +315,7 @@ func (r *RaftNode) leaderCtx() func() {
 		followers:          followers,
 		waitGroup:          wait.Group{},
 		inflightingFutures: make(map[uint64]*ApplyFuture),
+		dispatchedIndex:    r.entryStore.LastIndex(),
 	}
 	for _, f := range leaderState.followers {
 		p := f
@@ -402,23 +404,23 @@ func (r *RaftNode) commitTo(toIndex uint64) {
 
 func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 	entries := make([]*raftpb.LogEntry, len(futures))
+	dispatchedIndex := r.leaderState.dispatchedIndex
 	for i, future := range futures {
 		entry := future.Entry
 		entry.Term = r.getCurrentTerm()
-		entry.Index = r.lastIndex() + 1 + uint64(i)
-
+		dispatchedIndex++
+		entry.Index = dispatchedIndex
 		r.mutex.Lock()
 		r.leaderState.inflightingFutures[entry.Index] = future
 		r.mutex.Unlock()
-
 		entries[i] = entry
-
 	}
 	if err := r.entryStore.AppendEntries(entries); err != nil {
 		r.logger.Errorf("append entries failed: %s", err.Error())
 		r.stepdown()
 		return
 	}
+	r.leaderState.dispatchedIndex = dispatchedIndex
 	if len(entries) > 0 {
 		r.leaderState.commitment.SetMatchIndex(r.localID, r.lastIndex())
 	}

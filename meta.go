@@ -31,7 +31,8 @@ type raftState struct {
 
 	lastApplied uint64
 	commitIndex uint64
-	state       State
+
+	state State
 
 	localID string
 	servers map[string]struct{}

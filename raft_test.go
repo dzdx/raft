@@ -184,6 +184,12 @@ func TestConcurrentAppendEntries(t *testing.T) {
 		})
 	}
 	waitGroup.Wait()
+	assert.Equal(t, leader.lastIndex(), uint64(1001))
+	for i := uint64(1); i <= leader.lastIndex(); i++ {
+		entry, err := leader.entryStore.GetEntry(i)
+		assert.Equal(t, err, nil)
+		assert.Equal(t, entry.Index, i)
+	}
 	shutdownNodes(nodes)
 }
 
