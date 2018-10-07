@@ -88,13 +88,17 @@ func (r *RaftNode) processRPC(rpc *transport.RPC) {
 	}
 }
 
+func (r *RaftNode) lastIndex() uint64 {
+	return r.entryStore.LastIndex()
+}
+
 func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEntriesReq) {
 	resp := &raftpb.AppendEntriesResp{
 		Success: false,
 	}
 	defer func() {
 		resp.Term = r.getCurrentTerm()
-		resp.LastLogIndex = r.lastLogIndex
+		resp.LastLogIndex = r.lastIndex()
 		rpc.Respond(resp, nil)
 	}()
 
@@ -107,7 +111,7 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 		r.setCurrentTerm(req.Term)
 	}
 	if req.PrevLogIndex > 0 {
-		if req.PrevLogIndex > r.lastLogIndex {
+		if req.PrevLogIndex > r.lastIndex() {
 			return
 		}
 		var prevLog *raftpb.LogEntry
@@ -139,17 +143,10 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 			}
 		}
 
-		var lastLog *raftpb.LogEntry
 		// delete conflict log entries
-		if err := r.entryStore.DeleteEntries(req.Entries[newStart].Index, r.lastLogIndex); err != nil {
+		if err := r.entryStore.DeleteEntries(req.Entries[newStart].Index, r.lastIndex()); err != nil {
 			r.logger.Errorf("delete entries failed: %s", err.Error())
 			return
-		}
-		if newStart-1 > 0 {
-			lastLog = req.Entries[newStart-1]
-			r.setLastLog(lastLog.Term, lastLog.Index)
-		} else {
-			r.setLastLog(0, 0)
 		}
 
 		newEntries := req.Entries[newStart:]
@@ -157,12 +154,10 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 			r.logger.Errorf("append entries failed: %s", err.Error())
 			return
 		}
-		lastLog = newEntries[len(newEntries)-1]
-		r.setLastLog(lastLog.Term, lastLog.Index)
 	}
 
 	if req.LeaderCommitIndex > 0 {
-		r.commitTo(util.MinUint64(req.LeaderCommitIndex, r.lastLogIndex))
+		r.commitTo(util.MinUint64(req.LeaderCommitIndex, r.lastIndex()))
 	}
 
 	r.setState(Follower)
@@ -194,7 +189,16 @@ func (r *RaftNode) processRequestVote(rpc *transport.RPC, req *raftpb.RequestVot
 	if req.Term < r.currentTerm {
 		return
 	}
-	lastLogTerm, lastLogIndex := r.getLastLog()
+	var lastLogIndex, lastLogTerm uint64
+	lastLogIndex = r.lastIndex()
+	if lastLogIndex > 0 {
+		lastLog, err := r.entryStore.GetEntry(r.lastIndex())
+		if err != nil {
+			r.logger.Errorf("get entry failed: %s", err.Error())
+			return
+		}
+		lastLogTerm = lastLog.Term
+	}
 	if req.LastLogIndex < lastLogIndex || req.LastLogTerm < lastLogTerm {
 		// candidate logs not complete
 		return
@@ -211,7 +215,16 @@ func (r *RaftNode) processRequestVote(rpc *transport.RPC, req *raftpb.RequestVot
 
 func (r *RaftNode) startElection() <-chan *raftpb.RequestVoteResp {
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
-	lastLogTerm, lastLogIndex := r.getLastLog()
+	var lastLogIndex, lastLogTerm uint64
+	lastLogIndex = r.lastIndex()
+	if lastLogIndex > 0 {
+		lastLog, err := r.entryStore.GetEntry(r.lastIndex())
+		if err != nil {
+			r.logger.Error(err)
+			return nil
+		}
+		lastLogTerm = lastLog.Term
+	}
 	req := &raftpb.RequestVoteReq{
 		Term:         r.getCurrentTerm(),
 		LastLogIndex: lastLogIndex,
@@ -392,7 +405,7 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 	for i, future := range futures {
 		entry := future.Entry
 		entry.Term = r.getCurrentTerm()
-		entry.Index = r.lastLogIndex + 1 + uint64(i)
+		entry.Index = r.lastIndex() + 1 + uint64(i)
 
 		r.mutex.Lock()
 		r.leaderState.inflightingFutures[entry.Index] = future
@@ -407,12 +420,10 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 		return
 	}
 	if len(entries) > 0 {
-		lastLog := entries[len(entries)-1]
-		r.setLastLog(lastLog.Term, lastLog.Index)
-		r.leaderState.commitment.SetMatchIndex(r.localID, lastLog.Index)
+		r.leaderState.commitment.SetMatchIndex(r.localID, r.lastIndex())
 	}
 	r.notifyFollowers()
-	r.logger.Debugf("dispatch log to %d", r.lastLogIndex)
+	r.logger.Debugf("dispatch log to %d", r.lastIndex())
 }
 
 func (r *RaftNode) notifyFollowers() {

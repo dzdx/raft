@@ -21,6 +21,7 @@ type IStore interface {
 	AppendEntries([]*raftpb.LogEntry) error
 	GetEntries(start, end uint64) ([]*raftpb.LogEntry, error)
 	GetEntry(index uint64) (*raftpb.LogEntry, error)
+	LastIndex()  uint64
 	DeleteEntries(start, end uint64) error
 	SetKV(key string, value []byte) error
 	GetKV(key string) ([]byte, error)

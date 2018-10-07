@@ -28,8 +28,6 @@ type raftState struct {
 	lastVotedFor  string
 	lastVotedTerm uint64
 	currentTerm   uint64
-	lastLogIndex  uint64
-	lastLogTerm   uint64
 
 	lastApplied uint64
 	commitIndex uint64
@@ -141,20 +139,5 @@ func (r *RaftNode) getLastContactLeader() (leaderID string, lastContact time.Tim
 	defer r.mutex.Unlock()
 	leaderID = r.leader
 	lastContact = r.lastContactLeader
-	return
-}
-
-func (r *RaftNode) setLastLog(term, index uint64) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	r.lastLogTerm = term
-	r.lastLogIndex = index
-}
-
-func (r *RaftNode) getLastLog() (term, index uint64) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	term = r.lastLogTerm
-	index = r.lastLogIndex
 	return
 }

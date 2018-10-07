@@ -94,7 +94,7 @@ func (r *RaftNode) syncReplicationTo(p *Progress) {
 				r.logger.Debugf("replicated logs [:%d] to %s", lastEntry.Index, p.serverID)
 			}
 
-			if p.nextIndex > r.lastLogIndex {
+			if p.nextIndex > r.lastIndex() {
 				timeout = util.BlockForever()
 			} else {
 				timeout = util.AtOnce()
@@ -120,7 +120,7 @@ func (r *RaftNode) runLogReplication(p *Progress) {
 
 func (r *RaftNode) setupAppendEntriesReq(p *Progress) (*raftpb.AppendEntriesReq, error) {
 	start := p.nextIndex
-	end := util.MinUint64(r.lastLogIndex, start+uint64(r.config.MaxBatchAppendEntries)-1)
+	end := util.MinUint64(r.lastIndex(), start+uint64(r.config.MaxBatchAppendEntries)-1)
 	var entries []*raftpb.LogEntry
 	var prevLog *raftpb.LogEntry
 	var err error

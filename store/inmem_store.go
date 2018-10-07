@@ -7,7 +7,7 @@ import (
 )
 
 type InmemStore struct {
-	mutex sync.Mutex
+	mutex     sync.Mutex
 	entrys    map[uint64]raftpb.LogEntry
 	lastIndex uint64
 	kv        map[string][]byte
@@ -59,6 +59,11 @@ func (s *InmemStore) DeleteEntries(start, end uint64) error {
 	}
 	s.lastIndex = start - 1
 	return nil
+}
+func (s *InmemStore) LastIndex() uint64 {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.lastIndex
 }
 
 func (s *InmemStore) SetKV(key string, value []byte) error {
