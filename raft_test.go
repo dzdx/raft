@@ -130,6 +130,10 @@ func TestLeaderLeaseAndReElectionLeader(t *testing.T) {
 	shutdownNodes(nodes)
 }
 
+func TestMostLogsNodeBecomeLeader(t *testing.T) {
+	// TODO
+}
+
 func TestAppendEntries(t *testing.T) {
 	defer testcaseCtx()()
 	var inmemServers = []string{

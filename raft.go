@@ -390,9 +390,19 @@ func (r *RaftNode) runLeader() {
 			}
 			r.dispatch(futures)
 		case <-r.leaderState.commitment.commitCh:
-			r.commitTo(r.leaderState.commitment.commitIndex)
+			r.leaderCommit(r.leaderState.commitment.commitIndex)
 			r.notifyFollowers()
 		}
+	}
+}
+func (r *RaftNode) leaderCommit(toIndex uint64) {
+	entry, err := r.entryStore.GetEntry(toIndex)
+	if err != nil {
+		r.logger.Error(err)
+		return
+	}
+	if entry.Term == r.currentTerm {
+		r.commitTo(toIndex)
 	}
 }
 
