@@ -33,8 +33,8 @@ func (future *future) Response() <-chan *RespWithError {
 
 type ApplyFuture struct {
 	future
-	Entry      *raftpb.LogEntry
-	ctx        context.Context
+	Entry *raftpb.LogEntry
+	ctx   context.Context
 }
 type DataFuture struct {
 	future

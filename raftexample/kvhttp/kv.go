@@ -86,7 +86,10 @@ func (k *KvStore) DeleteKey(ctx context.Context, key string) (string, error) {
 	}
 	data, _ := proto.Marshal(kv)
 	result, err := k.raftNode.Apply(ctx, data)
-	return result.(string), err
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
 }
 
 func (k *KvStore) PutKey(ctx context.Context, key, value string) (string, error) {
@@ -97,5 +100,8 @@ func (k *KvStore) PutKey(ctx context.Context, key, value string) (string, error)
 	}
 	data, _ := proto.Marshal(kv)
 	result, err := k.raftNode.Apply(ctx, data)
-	return result.(string), err
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
 }

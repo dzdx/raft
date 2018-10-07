@@ -41,7 +41,8 @@ type RaftNode struct {
 	config      RaftConfig
 	applyCh     chan *ApplyFuture
 	committedCh chan *DataFuture
-	appliedCh   chan *IndexFuture
+
+	notifyApplyCh chan struct{}
 
 	waitGroup   wait.Group
 	ctx         context.Context
@@ -385,72 +386,9 @@ func (r *RaftNode) runLeader() {
 }
 
 func (r *RaftNode) commitTo(toIndex uint64) {
-	for index := util.MaxUint64(r.commitIndex+1, 1); index <= toIndex; index++ {
-		entry, err := r.entryStore.GetEntry(index)
-		if err != nil {
-			r.logger.Errorf("get entry failed: %s", err.Error())
-			return
-		}
-		respChan := make(chan *RespWithError, 1)
-		indexFuture := &IndexFuture{
-			future: future{
-				respChan: respChan,
-			},
-			Index: entry.Index,
-		}
-		dataFuture := &DataFuture{
-			future: future{respChan: respChan},
-			Data:   entry.Data,
-		}
-		switch entry.LogType {
-		case raftpb.LogEntry_LogNoop:
-			dataFuture.Respond(nil, nil)
-		case raftpb.LogEntry_LogCommand:
-			select {
-			case r.committedCh <- dataFuture:
-			case <-r.ctx.Done():
-				return
-			}
-		}
-
-		r.commitIndex = index
-		r.logger.Debugf("log entry %d committed", index)
-
-		select {
-		case r.appliedCh <- indexFuture:
-		case <-r.ctx.Done():
-			return
-		}
-	}
-}
-
-func (r *RaftNode) runProcessApplied() {
-	for {
-		select {
-		case <-r.ctx.Done():
-			return
-		case indexFuture := <-r.appliedCh:
-			index := indexFuture.Index
-			respWithError := <-indexFuture.Response()
-			r.lastApplied = index
-			r.logger.Debugf("log entry %d applied", index)
-
-			if r.leaderState != nil {
-				r.mutex.Lock()
-				reqFuture, ok := r.leaderState.inflightingFutures[index]
-				r.mutex.Unlock()
-
-				if !ok {
-					continue
-				}
-
-				reqFuture.Respond(respWithError.Resp, respWithError.Err)
-				r.mutex.Lock()
-				delete(r.leaderState.inflightingFutures, index)
-				r.mutex.Unlock()
-			}
-		}
-	}
+	r.commitIndex = util.MaxUint64(r.commitIndex, toIndex)
+	util.AsyncNotify(r.notifyApplyCh)
+	r.logger.Debugf("commit log to %d", r.commitIndex)
 }
 
 func (r *RaftNode) dispatch(futures []*ApplyFuture) {
@@ -466,7 +404,6 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 
 		entries[i] = entry
 
-		r.logger.Debugf("dispatch log %d", entry.Index)
 	}
 	if err := r.entryStore.AppendEntries(entries); err != nil {
 		r.logger.Errorf("append entries failed: %s", err.Error())
@@ -479,6 +416,7 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 		r.leaderState.commitment.SetMatchIndex(r.localID, lastLog.Index)
 	}
 	r.notifyFollowers()
+	r.logger.Debugf("dispatch log to %d", r.lastLogIndex)
 }
 
 func (r *RaftNode) notifyFollowers() {
@@ -523,7 +461,8 @@ func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.IT
 
 		applyCh:     make(chan *ApplyFuture, config.MaxInflightingEntries),
 		committedCh: make(chan *DataFuture, config.MaxInflightingEntries),
-		appliedCh:   make(chan *IndexFuture, config.MaxInflightingEntries),
+
+		notifyApplyCh: make(chan struct{}, 1),
 
 		waitGroup:  wait.Group{},
 		ctx:        ctx,
@@ -537,7 +476,7 @@ func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.IT
 	r.restoreMeta()
 	r.setupLogger()
 	r.waitGroup.Start(transport.Serve)
-	r.waitGroup.Start(r.runProcessApplied)
+	r.waitGroup.Start(r.runFSM)
 	r.waitGroup.Start(r.run)
 	return r
 }

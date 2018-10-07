@@ -16,7 +16,7 @@ func newTestCluster(servers []string) (*transport.InmemNetwork, map[string]*Raft
 	nodes := make(map[string]*RaftNode, len(servers))
 	for _, ID := range servers {
 		config := DefaultConfig(servers, ID)
-		config.VerboseLog =false
+		config.VerboseLog = true
 		storage := store.NewInmemStore()
 		trans := network.GetTrans(ID)
 		node := NewRaftNode(config, storage, trans)
