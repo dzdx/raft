@@ -6,10 +6,21 @@ import (
 	"time"
 )
 
+type RaftConfig struct {
+	MaxInflightingEntries int
+	MaxBatchAppendEntries int
+	MaxBatchApplyEntries  int
+	ElectionTimeout       time.Duration
+	Servers               []string
+	LocalID               string
+	VerboseLog            bool
+}
+
 func DefaultConfig(servers []string, localID string) RaftConfig {
 	return RaftConfig{
 		MaxInflightingEntries: 2048,
 		MaxBatchAppendEntries: 64,
+		MaxBatchApplyEntries:  64,
 		ElectionTimeout:       300 * time.Millisecond,
 		Servers:               servers,
 		LocalID:               localID,
@@ -47,6 +58,6 @@ func (r *RaftNode) GetLeader() string {
 	return r.leader
 }
 
-func (r *RaftNode)CheckQuit()<-chan struct{}{
+func (r *RaftNode) CheckQuit() <-chan struct{} {
 	return r.ctx.Done()
 }

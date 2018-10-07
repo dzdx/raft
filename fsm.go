@@ -5,8 +5,6 @@ import (
 	"github.com/dzdx/raft/raftpb"
 )
 
-const maxBatchApply = 64
-
 func entryToFutures(entry *raftpb.LogEntry) (*DataFuture, *IndexFuture) {
 	respChan := make(chan *RespWithError, 1)
 	dataFuture := &DataFuture{
@@ -33,7 +31,7 @@ func (r *RaftNode) runFSM() {
 		}
 		for r.lastApplied < r.commitIndex {
 			start := r.lastApplied + 1
-			end := util.MinUint64(r.commitIndex, r.lastApplied+maxBatchApply)
+			end := util.MinUint64(r.commitIndex, r.lastApplied+uint64(r.config.MaxBatchApplyEntries))
 			entries, err := r.entryStore.GetEntries(start, end)
 			if err != nil {
 				r.logger.Errorf("get entries failed: %s", err.Error())
@@ -47,11 +45,18 @@ func (r *RaftNode) runFSM() {
 				for i < count {
 					entry := entries[i]
 					dataFuture, indexFuture := entryToFutures(entry)
-					select {
-					case r.committedCh <- dataFuture:
-					default:
-						break batchApply
+
+					switch entry.LogType {
+					case raftpb.LogEntry_LogCommand:
+						select {
+						case r.committedCh <- dataFuture:
+						default:
+							break batchApply
+						}
+					case raftpb.LogEntry_LogNoop:
+						indexFuture.Respond(nil, nil)
 					}
+
 					futures = append(futures, indexFuture)
 					i++
 				}

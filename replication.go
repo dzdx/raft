@@ -31,7 +31,7 @@ func (r *RaftNode) runHeartbeat(p *Progress) {
 				Term:     r.getCurrentTerm(),
 				LeaderID: r.localID,
 			}
-			ctx, cancel := context.WithTimeout(p.ctx, 3*time.Second)
+			ctx, cancel := context.WithTimeout(p.ctx, 50*time.Millisecond)
 			resp, err = r.transport.AppendEntries(ctx, p.serverID, req)
 			cancel()
 			if err != nil {
@@ -49,6 +49,9 @@ func (r *RaftNode) runHeartbeat(p *Progress) {
 }
 
 func (r *RaftNode) syncReplicationTo(p *Progress) {
+	r.logger.Debugf("start sync replication to %s", p.serverID)
+	defer r.logger.Debugf("stop sync replication to %s", p.serverID)
+
 	backoff := 0
 	baseTimeout := 10 * time.Millisecond
 	timeout := util.BlockForever()
@@ -56,7 +59,6 @@ func (r *RaftNode) syncReplicationTo(p *Progress) {
 	for {
 		select {
 		case <-p.ctx.Done():
-			r.logger.Infof("stop sync replication to %s", p.serverID)
 			return
 		case <-p.notifyCh:
 		case <-timeout:

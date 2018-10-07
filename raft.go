@@ -26,15 +26,6 @@ type leaderState struct {
 	inflightingFutures map[uint64]*ApplyFuture
 }
 
-type RaftConfig struct {
-	MaxInflightingEntries int
-	MaxBatchAppendEntries int
-	ElectionTimeout       time.Duration
-	Servers               []string
-	LocalID               string
-	VerboseLog            bool
-}
-
 type RaftNode struct {
 	raftState
 
@@ -108,6 +99,7 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 	}()
 
 	if req.Term < r.currentTerm {
+		// reject stale leader's log
 		return
 	}
 
@@ -188,7 +180,11 @@ func (r *RaftNode) processRequestVote(rpc *transport.RPC, req *raftpb.RequestVot
 
 	leaderID, lastContactLeader := r.getLastContactLeader()
 	if leaderID != None && leaderID != req.CandidateID && time.Now().Sub(lastContactLeader) < r.config.ElectionTimeout {
-		// now this node has leader
+		// now this node has another leader
+		// to avoid
+		// Leader -x- F1
+		// Leader --- F2
+		// F1 --- F2
 		return
 	}
 	if r.lastVotedTerm == req.Term && r.lastVotedFor != None && r.lastVotedFor != req.CandidateID {
