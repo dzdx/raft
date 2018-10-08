@@ -303,7 +303,7 @@ func (r *RaftNode) leaderCtx() func() {
 				commitment: commitment,
 				cancelFunc: cancelFunc,
 				serverID:   s,
-				nextIndex:  1,
+				nextIndex:  r.lastIndex() + 1,
 				notifyCh:   make(chan struct{}, 1),
 			}
 		}
