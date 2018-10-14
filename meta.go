@@ -86,8 +86,6 @@ func (r *RaftNode) setLastVoted(votedFor string) {
 }
 
 func (r *RaftNode) restoreMeta() {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
 	var lastVotedFor string
 	var lastVotedTerm uint64
 
@@ -118,18 +116,24 @@ func (r *RaftNode) restoreMeta() {
 		currentTerm = binary.BigEndian.Uint64(data)
 	}
 	r.currentTerm = currentTerm
+	if err := r.syncLastLog(); err != nil {
+		r.logger.Fatal(err)
+	}
+}
 
+func (r *RaftNode) syncLastLog() error {
 	var lastIndex, lastTerm uint64
 	var err error
 	lastIndex, err = r.entryStore.LastIndex()
 	if err != nil {
-		r.logger.Fatalf("read last index failed: %s", err.Error())
+		r.logger.Error(err)
+		return err
 	}
 	if lastIndex != 0 {
 		var lastLog *raftpb.LogEntry
 		if lastLog, err = r.entryStore.GetEntry(lastIndex); err != nil {
 			if _, ok := err.(*store.ErrNotFound); !ok {
-				r.logger.Fatalf("read last index from entry store failed")
+				return err
 			}
 		} else {
 			lastTerm = lastLog.Term
@@ -142,10 +146,10 @@ func (r *RaftNode) restoreMeta() {
 			lastTerm = snap.Term
 		}
 	}
-	r.lastLogIndex = lastIndex
-	r.lastLogTerm = lastTerm
-}
 
+	r.setLastLog(lastTerm, lastIndex)
+	return nil
+}
 func (r *RaftNode) getState() State {
 	return r.state
 }

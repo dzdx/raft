@@ -222,33 +222,20 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 			}
 		}
 
-		var lastIndex = r.lastIndex()
-		defer func() {
-			term, index := r.getLastLog()
-			if lastLog, err := r.entryStore.GetEntry(lastIndex); err != nil {
-				r.logger.Error(err)
-				resp.Success = false
-			} else {
-				if lastLog.Term != term || lastLog.Index != index {
-					r.setLastLog(lastLog.Term, lastLog.Index)
-				}
-			}
-		}()
 		// delete conflict log entries
 		if err := r.entryStore.DeleteEntries(req.Entries[newStart].Index, r.lastIndex()); err != nil {
 			r.logger.Errorf("delete entries failed: %s", err.Error())
 			return
 		}
-		if req.Entries[newStart].Index <= r.lastIndex() {
-			lastIndex = req.Entries[newStart].Index - 1
-		}
+		// TODO maybe append entries failed
 
 		newEntries := req.Entries[newStart:]
 		if err := r.entryStore.AppendEntries(newEntries); err != nil {
 			r.logger.Errorf("append entries failed: %s", err.Error())
 			return
 		}
-		lastIndex = req.Entries[len(req.Entries)-1].Index
+		lastEntry := req.Entries[len(req.Entries)-1]
+		r.setLastLog(lastEntry.Term, lastEntry.Index)
 	}
 
 	if req.LeaderCommitIndex > 0 {
@@ -517,9 +504,9 @@ func (r *RaftNode) leaderCommit(toIndex uint64) {
 
 func (r *RaftNode) commitTo(toIndex uint64) {
 	if toIndex > r.commitIndex {
-		r.commitIndex = util.MaxUint64(r.commitIndex, toIndex)
-		util.AsyncNotify(r.notifyApplyCh)
+		r.commitIndex = toIndex
 		r.logger.Debugf("commit log to %d", r.commitIndex)
+		util.AsyncNotify(r.notifyApplyCh)
 	}
 }
 
@@ -616,6 +603,7 @@ func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.IT
 		snapshoter: snapshoter,
 	}
 	r.restoreMeta()
+	r.restoreSnapshot()
 	r.setupLogger()
 	r.waitGroup.Start(transport.Serve)
 	r.waitGroup.Start(r.runFSM)

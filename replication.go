@@ -94,13 +94,13 @@ func (r *RaftNode) syncReplication(p *Progress) {
 		}
 		if resp.Success {
 			p.lastContact = time.Now()
-			p.commitIndex = req.LeaderCommitIndex
 			if len(req.Entries) > 0 {
 				lastEntry := req.Entries[len(req.Entries)-1]
 				p.commitment.SetMatchIndex(p.serverID, lastEntry.Index)
 				p.nextIndex = lastEntry.Index + 1
 				r.logger.Debugf("replicated logs [:%d] to %s", lastEntry.Index, p.serverID)
 			}
+			p.commitIndex = util.MinUint64(req.LeaderCommitIndex, p.commitment.GetMatchIndex(p.serverID))
 
 			if p.nextIndex > r.leaderState.dispatchedIndex {
 				return

@@ -68,3 +68,11 @@ func (r *RaftNode) GetLeader() string {
 func (r *RaftNode) Snapshot() {
 	util.AsyncNotify(r.notifySnapshotCh)
 }
+
+func (r *RaftNode) AddServer(serverID string) {
+
+}
+
+func (r *RaftNode) RemoveServer(serverID string) {
+
+}

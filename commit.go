@@ -25,6 +25,12 @@ func newcommitment(servers map[string]struct{}) *commitment {
 	return c
 }
 
+func (c *commitment)GetMatchIndex(serverID string) uint64{
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.matchIndexes[serverID]
+}
+
 func (c *commitment) SetMatchIndex(serverID string, matchIndex uint64) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()

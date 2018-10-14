@@ -63,7 +63,7 @@ type clusterManager struct {
 
 func (m *clusterManager) newRaftNode(servers []string, localID string) *RaftNode {
 	config := DefaultConfig(servers, localID)
-	//config.VerboseLog = true
+	config.VerboseLog = true
 	config.MaxReplicationBackoffTimeout = 100 * time.Millisecond
 	storage := store.NewInmemStore()
 	trans := m.network.Join(localID)
@@ -107,7 +107,7 @@ func TestElectionLeader(t *testing.T) {
 			leaderCount++
 		}
 	}
-	assert.Equal(t, leaderCount, 1)
+	assert.Equal(t, 1, leaderCount)
 	manager.shutdown()
 }
 
@@ -123,7 +123,7 @@ func TestElectionNoLeader(t *testing.T) {
 			leaderCount++
 		}
 	}
-	assert.Equal(t, leaderCount, 0)
+	assert.Equal(t, 0, leaderCount)
 	manager.shutdown()
 }
 
@@ -152,7 +152,7 @@ func TestLeaderLeaseAndReElectionLeader(t *testing.T) {
 			leaderCount++
 		}
 	}
-	assert.Equal(t, leaderCount, 1)
+	assert.Equal(t, 1, leaderCount)
 	manager.shutdown()
 }
 
@@ -163,8 +163,8 @@ func TestAppendEntries(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		source := []byte(strconv.Itoa(i))
 		resp, err := manager.apply(context.Background(), source)
-		assert.Equal(t, resp, source)
-		assert.Equal(t, err, nil)
+		assert.Equal(t, source, resp)
+		assert.Equal(t, nil, err)
 	}
 	manager.shutdown()
 }
@@ -178,8 +178,8 @@ func TestNetworkPartitionAppendEntries(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		source := []byte(strconv.Itoa(i))
 		resp, err := manager.apply(context.Background(), source)
-		assert.Equal(t, resp, source)
-		assert.Equal(t, err, nil)
+		assert.Equal(t, source, resp)
+		assert.Equal(t, nil, err)
 	}
 	manager.shutdown()
 }
@@ -194,16 +194,16 @@ func TestConcurrentAppendEntries(t *testing.T) {
 		source := []byte(strconv.Itoa(i))
 		waitGroup.Start(func() {
 			resp, err := leader.Apply(context.Background(), source)
-			assert.Equal(t, resp, source)
-			assert.Equal(t, err, nil)
+			assert.Equal(t, source, resp)
+			assert.Equal(t, nil, err)
 		})
 	}
 	waitGroup.Wait()
-	assert.Equal(t, leader.lastIndex(), uint64(1001))
+	assert.Equal(t, uint64(1001), leader.lastIndex())
 	for i := uint64(1); i <= leader.lastIndex(); i++ {
 		entry, err := leader.entryStore.GetEntry(i)
-		assert.Equal(t, err, nil)
-		assert.Equal(t, entry.Index, i)
+		assert.Equal(t, nil, err)
+		assert.Equal(t, i, entry.Index)
 	}
 	manager.shutdown()
 }
@@ -216,13 +216,13 @@ func TestFollowerCommitInShortTime(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		source := []byte(strconv.Itoa(i))
 		resp, err := leader.Apply(context.Background(), source)
-		assert.Equal(t, resp, source)
-		assert.Equal(t, err, nil)
+		assert.Equal(t, source, resp)
+		assert.Equal(t, nil, err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	for _, node := range manager.nodes {
-		assert.Equal(t, leader.commitIndex, node.commitIndex)
-		assert.Equal(t, leader.lastApplied, node.lastApplied)
+		assert.Equal(t, node.commitIndex, leader.commitIndex)
+		assert.Equal(t, node.lastApplied, leader.lastApplied)
 	}
 	manager.shutdown()
 }
@@ -238,24 +238,24 @@ func TestTriggerSnapshot(t *testing.T) {
 
 	var index uint64
 	index, _ = leader.entryStore.LastIndex()
-	assert.Equal(t, index, uint64(1001))
+	assert.Equal(t, uint64(1001), index)
 	leader.Snapshot()
 	time.Sleep(50 * time.Millisecond)
 	assert.NotEqual(t, leader.snapshoter.Last(), nil)
 	meta := leader.snapshoter.Last()
 	snap, _ := leader.snapshoter.Open(meta.ID)
 	content, _ := ioutil.ReadAll(snap.Content())
-	assert.Equal(t, content, []byte("snapshot"))
+	assert.Equal(t, []byte("snapshot"), content)
 
 	index, _ = leader.entryStore.FirstIndex()
-	assert.Equal(t, index, uint64(0))
+	assert.Equal(t, uint64(0), index)
 	index, _ = leader.entryStore.LastIndex()
-	assert.Equal(t, index, uint64(0))
+	assert.Equal(t, uint64(0), index)
 	leader.Apply(context.Background(), []byte("1"))
 	index, _ = leader.entryStore.FirstIndex()
-	assert.Equal(t, index, uint64(1002))
+	assert.Equal(t, uint64(1002), index)
 	index, _ = leader.entryStore.LastIndex()
-	assert.Equal(t, index, uint64(1002))
+	assert.Equal(t, uint64(1002), index)
 	manager.shutdown()
 }
 func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
@@ -268,7 +268,7 @@ func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
 		leader.Apply(context.Background(), []byte("1"))
 	}
 	index, _ := n3.entryStore.LastIndex()
-	assert.Equal(t, index, uint64(0))
+	assert.Equal(t, uint64(0), index)
 	leader.Snapshot()
 
 	n3.resetElectionTimer()
@@ -278,18 +278,18 @@ func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
 	manager.network.SetPartition([]string{"1", "2", "3"})
 	time.Sleep(200 * time.Millisecond)
 
-	assert.Equal(t, n3.lastIndex(), uint64(101))
-	assert.Equal(t, n3.lastApplied, uint64(101))
+	assert.Equal(t, uint64(101), n3.lastIndex())
+	assert.Equal(t, uint64(101), n3.lastApplied)
 	assert.NotEqual(t, n3.snapshoter.Last(), nil)
 	meta := n3.snapshoter.Last()
 	snap, _ := n3.snapshoter.Open(meta.ID)
 	content, _ := ioutil.ReadAll(snap.Content())
-	assert.Equal(t, content, []byte("snapshot"))
+	assert.Equal(t, []byte("snapshot"), content)
 
 	manager.apply(context.Background(), []byte("2"))
 	time.Sleep(200 * time.Millisecond)
 	for _, n := range manager.nodes {
-		assert.Equal(t, n.lastIndex(), uint64(102))
+		assert.Equal(t, uint64(102), n.lastIndex(), n.localID)
 	}
 	manager.shutdown()
 }

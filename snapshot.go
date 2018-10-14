@@ -86,3 +86,19 @@ func (r *RaftNode) compactLog(end uint64) error {
 	}
 	return r.entryStore.DeleteEntries(start, end)
 }
+
+func (r *RaftNode) restoreSnapshot() {
+	last := r.snapshoter.Last()
+	if last == nil {
+		return
+	}
+	snap, err := r.snapshoter.Open(last.ID)
+	if err != nil {
+		r.logger.Fatal(err)
+	}
+	err = r.fsm.Restore(r.ctx, snap.Content())
+	if err != nil{
+		r.logger.Fatal(err)
+	}
+	r.lastApplied = last.Index
+}
