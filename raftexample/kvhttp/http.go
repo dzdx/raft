@@ -11,6 +11,7 @@ import (
 	"github.com/dzdx/raft/transport"
 	"github.com/dzdx/raft/util/wait"
 	"net/url"
+	"github.com/dzdx/raft/snapshot"
 )
 
 type Node struct {
@@ -114,6 +115,7 @@ type NodeConfig struct {
 	Raftaddrs map[string]string
 	Webaddrs  map[string]string
 	LocalID   string
+	StorePath string
 }
 
 func newRaftNode(config NodeConfig, fsm raft.IFsm) *raft.RaftNode {
@@ -125,9 +127,10 @@ func newRaftNode(config NodeConfig, fsm raft.IFsm) *raft.RaftNode {
 	raftConfig := raft.DefaultConfig(servers, config.LocalID)
 
 	raftConfig.VerboseLog = true
-	storage := store.NewInmemStore()
+	storage := store.NewBoltdbStore(config.StorePath)
+	snapshoter := snapshot.NewInmemSnapShotStore()
 	trans := transport.NewGRPCTransport(config.Raftaddrs, config.LocalID)
-	node := raft.NewRaftNode(raftConfig, storage, trans, fsm)
+	node := raft.NewRaftNode(raftConfig, storage, trans, fsm, snapshoter)
 	return node
 }
 

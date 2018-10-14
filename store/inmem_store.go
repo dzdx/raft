@@ -8,7 +8,7 @@ import (
 
 type InmemStore struct {
 	mutex     sync.Mutex
-	entrys    map[uint64]raftpb.LogEntry
+	entries   map[uint64]raftpb.LogEntry
 	lowIndex  uint64
 	highIndex uint64
 	kv        map[string][]byte
@@ -16,8 +16,8 @@ type InmemStore struct {
 
 func NewInmemStore() *InmemStore {
 	return &InmemStore{
-		entrys: make(map[uint64]raftpb.LogEntry),
-		kv:     make(map[string][]byte),
+		entries: make(map[uint64]raftpb.LogEntry),
+		kv:      make(map[string][]byte),
 	}
 }
 
@@ -25,7 +25,7 @@ func (s *InmemStore) AppendEntries(es []*raftpb.LogEntry) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	for _, entry := range es {
-		s.entrys[entry.Index] = *entry
+		s.entries[entry.Index] = *entry
 		if s.lowIndex == 0 {
 			s.lowIndex = entry.Index
 		}
@@ -39,7 +39,7 @@ func (s *InmemStore) GetEntries(start, end uint64) ([]*raftpb.LogEntry, error) {
 	defer s.mutex.Unlock()
 	entrys := make([]*raftpb.LogEntry, end-start+1)
 	for i := start; i <= end; i++ {
-		e, ok := s.entrys[i]
+		e, ok := s.entries[i]
 		if !ok {
 			return nil, NewErrNotFound("entry not found: %v", i)
 		}
@@ -51,7 +51,7 @@ func (s *InmemStore) GetEntries(start, end uint64) ([]*raftpb.LogEntry, error) {
 func (s *InmemStore) GetEntry(index uint64) (*raftpb.LogEntry, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if e, ok := s.entrys[index]; !ok {
+	if e, ok := s.entries[index]; !ok {
 		return nil, NewErrNotFound("entry not found: %v", index)
 	} else {
 		return &e, nil
@@ -62,7 +62,7 @@ func (s *InmemStore) DeleteEntries(start, end uint64) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	for i := start; i <= end; i++ {
-		delete(s.entrys, i)
+		delete(s.entries, i)
 	}
 	if start <= s.lowIndex {
 		s.lowIndex = end + 1
@@ -77,16 +77,16 @@ func (s *InmemStore) DeleteEntries(start, end uint64) error {
 	return nil
 }
 
-func (s *InmemStore) FirstIndex() uint64 {
+func (s *InmemStore) FirstIndex() (uint64, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	return s.lowIndex
+	return s.lowIndex, nil
 }
 
-func (s *InmemStore) LastIndex() uint64 {
+func (s *InmemStore) LastIndex() (uint64, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	return s.highIndex
+	return s.highIndex, nil
 }
 
 func (s *InmemStore) SetKV(key string, value []byte) error {

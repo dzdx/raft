@@ -3,6 +3,7 @@ package util
 import (
 	"time"
 	"math/rand"
+	"encoding/binary"
 )
 
 func AsyncNotify(c chan struct{}) {
@@ -46,6 +47,15 @@ func MinDuration(t1 time.Duration, t2 time.Duration) time.Duration {
 		return t2
 	}
 	return t1
+}
+
+func BytesToUint64(b []byte) uint64 {
+	return binary.BigEndian.Uint64(b)
+}
+func Uint64ToBytes(i uint64) []byte {
+	var b = make([]byte, 8)
+	binary.BigEndian.PutUint64(b, i)
+	return b
 }
 
 func init() {

@@ -65,6 +65,9 @@ func (r *RaftNode) takeSnapshot() error {
 }
 
 func (r *RaftNode) compactLog(end uint64) error {
-	start := r.entryStore.FirstIndex()
+	start, err := r.entryStore.FirstIndex()
+	if err != nil {
+		return err
+	}
 	return r.entryStore.DeleteEntries(start, end)
 }

@@ -99,7 +99,7 @@ func (r *RaftNode) restoreMeta() {
 			r.logger.Fatalf("read last voted failed %s", err.Error())
 		}
 	} else {
-		var lastVoted *raftpb.LastVoted
+		lastVoted := &raftpb.LastVoted{}
 		proto.Unmarshal(data, lastVoted)
 		lastVotedFor = lastVoted.VotedFor
 		lastVotedTerm = lastVoted.VotedTerm
@@ -121,7 +121,10 @@ func (r *RaftNode) restoreMeta() {
 
 	var lastIndex, lastTerm uint64
 	var err error
-	lastIndex = r.entryStore.LastIndex()
+	lastIndex, err = r.entryStore.LastIndex()
+	if err != nil {
+		r.logger.Fatalf("read last index failed: %s", err.Error())
+	}
 	if lastIndex != 0 {
 		var lastLog *raftpb.LogEntry
 		if lastLog, err = r.entryStore.GetEntry(lastIndex); err != nil {

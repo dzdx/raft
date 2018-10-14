@@ -2,6 +2,7 @@ module github.com/dzdx/raft
 
 require (
 	github.com/DeanThompson/ginpprof v0.0.0-20170218162546-8c0e31bfeaa8
+	github.com/boltdb/bolt v1.3.1
 	github.com/gin-contrib/sse v0.0.0-20170109093832-22d885f9ecc7 // indirect
 	github.com/gin-gonic/gin v1.3.0
 	github.com/golang/protobuf v1.2.0

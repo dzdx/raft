@@ -235,15 +235,23 @@ func TestTriggerSnapshot(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		leader.Apply(context.Background(), []byte("1"))
 	}
-	assert.Equal(t, leader.entryStore.LastIndex(), uint64(1001))
+
+	var index uint64
+	index, _ = leader.entryStore.LastIndex()
+	assert.Equal(t, index, uint64(1001))
 	leader.Snapshot()
 	time.Sleep(50 * time.Millisecond)
 	assert.NotEqual(t, leader.snapshoter.Last(), nil)
-	assert.Equal(t, leader.entryStore.FirstIndex(), uint64(0))
-	assert.Equal(t, leader.entryStore.LastIndex(), uint64(0))
+
+	index, _ = leader.entryStore.FirstIndex()
+	assert.Equal(t, index, uint64(0))
+	index, _ = leader.entryStore.LastIndex()
+	assert.Equal(t, index, uint64(0))
 	leader.Apply(context.Background(), []byte("1"))
-	assert.Equal(t, leader.entryStore.FirstIndex(), uint64(1002))
-	assert.Equal(t, leader.entryStore.LastIndex(), uint64(1002))
+	index, _ = leader.entryStore.FirstIndex()
+	assert.Equal(t, index, uint64(1002))
+	index, _ = leader.entryStore.LastIndex()
+	assert.Equal(t, index, uint64(1002))
 	manager.shutdown()
 }
 func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
@@ -255,7 +263,8 @@ func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		leader.Apply(context.Background(), []byte("1"))
 	}
-	assert.Equal(t, n3.entryStore.LastIndex(), uint64(0))
+	index, _ := n3.entryStore.LastIndex()
+	assert.Equal(t, index, uint64(0))
 	leader.Snapshot()
 
 	n3.resetElectionTimer()

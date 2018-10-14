@@ -1,6 +1,10 @@
 package main
 
-import "github.com/dzdx/raft/raftexample/kvhttp"
+import (
+	"github.com/dzdx/raft/raftexample/kvhttp"
+	"path"
+	"os"
+)
 
 func main() {
 	raftAddrs := map[string]string{
@@ -18,7 +22,9 @@ func main() {
 			Raftaddrs: raftAddrs,
 			Webaddrs:  webAddrs,
 			LocalID:   ID,
+			StorePath: path.Join("raftexample/data/", ID, "store/raft.db"),
 		}
+		os.MkdirAll(path.Join("raftexample/data/", ID, "store"), 0744)
 		node := kvhttp.NewNode(config)
 		go node.Run()
 	}

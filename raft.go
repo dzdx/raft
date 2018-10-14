@@ -401,7 +401,7 @@ func (r *RaftNode) leaderCtx() func() {
 		followers:          followers,
 		waitGroup:          wait.Group{},
 		inflightingFutures: make(map[uint64]ApplyFuture),
-		dispatchedIndex:    r.entryStore.LastIndex(),
+		dispatchedIndex:    r.lastIndex(),
 	}
 	for _, f := range leaderState.followers {
 		p := f
