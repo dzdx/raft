@@ -156,6 +156,7 @@ func (r *RaftNode) sendSnapshot(p *Progress) {
 		return
 	}
 	var offset uint64
+	content := snap.Content()
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -164,7 +165,7 @@ func (r *RaftNode) sendSnapshot(p *Progress) {
 		}
 		var done bool
 		buffer := make([]byte, 2<<16)
-		n, err := snap.Content().Read(buffer)
+		n, err := content.Read(buffer)
 		if err != nil {
 			if err == io.EOF {
 				done = true

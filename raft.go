@@ -46,12 +46,11 @@ type RaftNode struct {
 	mutex       sync.Mutex
 	leaderState *leaderState
 
-	entryStore      store.IStore
-	metaStore       store.IStore
-	transport       transport.ITransport
-	fsm             IFsm
-	snapshoter      snapshot.ISnapShotStore
-	currentSnapshot string
+	entryStore store.IStore
+	metaStore  store.IStore
+	transport  transport.ITransport
+	fsm        IFsm
+	snapshoter snapshot.ISnapShotStore
 
 	logger *logrus.Logger
 
@@ -109,39 +108,52 @@ func (r *RaftNode) processInstallSnapshot(rpc *transport.RPC, req *raftpb.Instal
 		resp.Term = r.getCurrentTerm()
 		rpc.Respond(resp, nil)
 	}()
-	var err error
-	var entry snapshot.ISnapShotEntry
+
+	if req.Term < r.getCurrentTerm() {
+		return
+	}
+
+	if req.Term > r.getCurrentTerm() {
+		r.setCurrentTerm(req.Term)
+		r.setState(Follower)
+	}
+
 	if req.Offset == 0 {
-		if entry, err = r.snapshoter.Create(req.LastTerm, req.LastIndex); err != nil {
-			r.logger.Error(err)
-			return
-		}
-	} else {
-		if entry, err = r.snapshoter.Open(r.currentSnapshot); err != nil {
+		var err error
+		if _, err = r.snapshoter.Create(req.LastTerm, req.LastIndex); err != nil {
 			r.logger.Error(err)
 			return
 		}
 	}
-	r.currentSnapshot = entry.ID()
-	if _, err = entry.Write(req.Data); err != nil {
-		r.logger.Error(err)
-		entry.Cancel()
+	snap := r.snapshoter.Doing()
+	if snap == nil {
+		r.logger.Error("need a start chunk")
 		return
 	}
-	if err = entry.Close(); err != nil {
+
+	if _, err := snap.WriteAt(req.Data, int64(req.Offset)); err != nil {
 		r.logger.Error(err)
-		entry.Cancel()
+		snap.Cancel()
 		return
 	}
+
 	if req.Done {
-		if err = r.fsm.Restore(r.ctx, entry.Content()); err != nil {
+		if err := snap.Close(); err != nil {
 			r.logger.Error(err)
-			entry.Cancel()
+			snap.Cancel()
+			return
+		}
+		if err := r.fsm.Restore(r.ctx, snap.Content()); err != nil {
+			r.logger.Error(err)
+			snap.Cancel()
 			return
 		} else {
 			if req.LastIndex > r.lastIndex() {
 				r.setLastLog(req.LastTerm, req.LastIndex)
-				r.compactLog(req.LastIndex)
+				if err := r.compactLog(req.LastIndex); err != nil {
+					snap.Cancel()
+					return
+				}
 				r.lastApplied = req.LastIndex
 			}
 		}

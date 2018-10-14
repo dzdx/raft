@@ -13,7 +13,10 @@ type SnapShotMeta struct {
 }
 
 type ISnapShotEntry interface {
-	io.WriteCloser
+	io.WriterAt
+	io.Writer
+	io.Closer
+
 	Content() io.ReadCloser
 	Cancel() error
 	ID() string
@@ -27,4 +30,5 @@ type ISnapShotStore interface {
 	Create(term uint64, index uint64) (ISnapShotEntry, error)
 	Last() *SnapShotMeta
 	Open(ID string) (ISnapShotEntry, error)
+	Doing()ISnapShotEntry
 }

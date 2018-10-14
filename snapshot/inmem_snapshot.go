@@ -10,28 +10,44 @@ import (
 type InmemSnapshotEntry struct {
 	store   *InmemSnapshotStore
 	meta    *SnapShotMeta
-	content *bytes.Buffer
+	content []byte
+	offset  int64
 }
 
 func (e *InmemSnapshotEntry) ID() string {
 	return e.meta.ID
 }
-
 func (e *InmemSnapshotEntry) Write(data []byte) (int, error) {
-	n, err := io.Copy(e.content, bytes.NewReader(data))
-	return int(n), err
+	buf := make([]byte, len(e.content)+len(data))
+	copy(buf[:len(e.content)], e.content)
+	copy(buf[len(e.content):], data)
+	e.offset = int64(len(e.content)) + int64(len(data))
+	e.content = buf
+	return len(data), nil
 }
+
+func (e *InmemSnapshotEntry) WriteAt(data []byte, offset int64) (int, error) {
+	buf := make([]byte, int(offset)+len(data))
+	copy(buf[:len(e.content)], e.content)
+	copy(buf[offset:], data)
+	e.offset = offset + int64(len(data))
+	e.content = buf
+	return len(data), nil
+}
+
 func (e *InmemSnapshotEntry) Close() error {
 	e.store.latest = e
+	e.store.doing = nil
 	return nil
 }
 
 func (e *InmemSnapshotEntry) Cancel() error {
+	e.store.doing = nil
 	return nil
 }
 
 func (e *InmemSnapshotEntry) Content() io.ReadCloser {
-	return ioutil.NopCloser(e.content)
+	return ioutil.NopCloser(bytes.NewReader(e.content))
 }
 
 func NewInmemSnapShotStore() *InmemSnapshotStore {
@@ -42,6 +58,7 @@ func NewInmemSnapShotStore() *InmemSnapshotStore {
 
 type InmemSnapshotStore struct {
 	latest *InmemSnapshotEntry
+	doing  *InmemSnapshotEntry
 }
 
 func (s *InmemSnapshotStore) Create(term uint64, index uint64) (ISnapShotEntry, error) {
@@ -52,9 +69,10 @@ func (s *InmemSnapshotStore) Create(term uint64, index uint64) (ISnapShotEntry, 
 			Term:  term,
 			Index: index,
 		},
-		content: &bytes.Buffer{},
+		content: make([]byte, 0),
 		store:   s,
 	}
+	s.doing = entry
 	return entry, nil
 }
 
@@ -70,4 +88,8 @@ func (s *InmemSnapshotStore) Open(ID string) (ISnapShotEntry, error) {
 		return s.latest, nil
 	}
 	return nil, fmt.Errorf("no snapshot named %s", ID)
+}
+
+func (s *InmemSnapshotStore) Doing() ISnapShotEntry {
+	return s.doing
 }

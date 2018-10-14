@@ -242,6 +242,10 @@ func TestTriggerSnapshot(t *testing.T) {
 	leader.Snapshot()
 	time.Sleep(50 * time.Millisecond)
 	assert.NotEqual(t, leader.snapshoter.Last(), nil)
+	meta := leader.snapshoter.Last()
+	snap, _ := leader.snapshoter.Open(meta.ID)
+	content, _ := ioutil.ReadAll(snap.Content())
+	assert.Equal(t, content, []byte("snapshot"))
 
 	index, _ = leader.entryStore.FirstIndex()
 	assert.Equal(t, index, uint64(0))
@@ -276,6 +280,10 @@ func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
 	assert.Equal(t, n3.lastIndex(), uint64(101))
 	assert.Equal(t, n3.lastApplied, uint64(101))
 	assert.NotEqual(t, n3.snapshoter.Last(), nil)
+	meta := n3.snapshoter.Last()
+	snap, _ := n3.snapshoter.Open(meta.ID)
+	content, _ := ioutil.ReadAll(snap.Content())
+	assert.Equal(t, content, []byte("snapshot"))
 
 	manager.apply(context.Background(), []byte("2"))
 	time.Sleep(200 * time.Millisecond)
