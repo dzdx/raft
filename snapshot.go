@@ -68,7 +68,7 @@ func (r *RaftNode) takeSnapshot() error {
 		entry.Cancel()
 		return err
 	}
-	if _, err := io.Copy(entry, snapshotResp.reader); err != nil {
+	if _, err := io.CopyBuffer(entry, snapshotResp.reader, make([]byte, 64*2<<10)); err != nil {
 		entry.Cancel()
 		return err
 	}

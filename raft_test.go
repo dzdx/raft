@@ -272,6 +272,7 @@ func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
 	leader.Snapshot()
 
 	n3.resetElectionTimer()
+	// to avoid high term n3 cause leader step down
 	n3.currentTerm = leader.currentTerm
 
 	manager.network.SetPartition([]string{"1", "2", "3"})

@@ -126,7 +126,7 @@ func newRaftNode(config NodeConfig, fsm raft.IFsm) *raft.RaftNode {
 
 	raftConfig := raft.DefaultConfig(servers, config.LocalID)
 
-	raftConfig.VerboseLog = true
+	//raftConfig.VerboseLog = true
 	storage := store.NewBoltdbStore(config.StorePath)
 	snapshoter := snapshot.NewInmemSnapShotStore()
 	trans := transport.NewGRPCTransport(config.Raftaddrs, config.LocalID)
