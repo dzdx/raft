@@ -16,6 +16,7 @@ type RaftConfig struct {
 	MaxBatchApplyEntries         int
 	ElectionTimeout              time.Duration
 	SnapshotInterval             time.Duration
+	SnapshotThreshold            int
 	MaxReplicationBackoffTimeout time.Duration
 	CommitTimeout                time.Duration
 
@@ -28,6 +29,7 @@ func DefaultConfig(servers []string, localID string) RaftConfig {
 		MaxBatchAppendEntries:        64,
 		MaxBatchApplyEntries:         64,
 		SnapshotInterval:             10 * time.Minute,
+		SnapshotThreshold:            2048,
 		ElectionTimeout:              300 * time.Millisecond,
 		CommitTimeout:                50 * time.Millisecond,
 		MaxReplicationBackoffTimeout: 3 * time.Second,
@@ -63,9 +65,6 @@ func (r *RaftNode) GetLeader() string {
 	return r.leader
 }
 
-func (r *RaftNode) CheckQuit() <-chan struct{} {
-	return r.ctx.Done()
-}
 func (r *RaftNode) Snapshot() {
 	util.AsyncNotify(r.notifySnapshotCh)
 }

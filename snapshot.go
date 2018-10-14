@@ -21,13 +21,28 @@ func (r *RaftNode) runSnapshot() {
 		case <-r.ctx.Done():
 			return
 		case <-time.After(r.config.SnapshotInterval):
+			if r.canSnapshot() {
+				r.takeSnapshot()
+			}
 		case <-r.notifySnapshotCh:
+			r.takeSnapshot()
 		}
-		r.takeSnapshot()
 	}
 }
 
-func (r *RaftNode) canSnapshot() {
+func (r *RaftNode) canSnapshot() bool {
+	first, err := r.entryStore.FirstIndex()
+	if err != nil {
+		r.logger.Error(err)
+		return false
+	}
+	if r.lastApplied < first {
+		r.logger.Fatalf("last applied < first log")
+	}
+	if first > 0 && r.lastApplied-first > uint64(r.config.SnapshotThreshold) {
+		return true
+	}
+	return false
 }
 
 func (r *RaftNode) takeSnapshot() error {
