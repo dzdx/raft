@@ -11,23 +11,23 @@ type RespWithError struct {
 }
 
 type future struct {
-	respChan chan *RespWithError
+	respChan chan RespWithError
 }
 
 func (future *future) init() {
-	future.respChan = make(chan *RespWithError, 1)
+	future.respChan = make(chan RespWithError, 1)
 }
 
 func (future *future) Respond(resp interface{}, err error) {
 	select {
-	case future.respChan <- &RespWithError{
+	case future.respChan <- RespWithError{
 		Resp: resp,
 		Err:  err,
 	}:
 	default:
 	}
 }
-func (future *future) Response() <-chan *RespWithError {
+func (future *future) Response() <-chan RespWithError {
 	return future.respChan
 }
 

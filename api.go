@@ -1,35 +1,44 @@
 package raft
 
 import (
-	"github.com/dzdx/raft/raftpb"
 	"context"
+	"github.com/dzdx/raft/raftpb"
 	"time"
+	"github.com/dzdx/raft/util"
 )
 
 type RaftConfig struct {
-	MaxInflightingEntries int
-	MaxBatchAppendEntries int
-	MaxBatchApplyEntries  int
-	ElectionTimeout       time.Duration
-	Servers               []string
-	LocalID               string
-	VerboseLog            bool
+	Servers []string
+	LocalID string
+
+	MaxInflightingEntries        int
+	MaxBatchAppendEntries        int
+	MaxBatchApplyEntries         int
+	ElectionTimeout              time.Duration
+	SnapshotInterval             time.Duration
+	MaxReplicationBackoffTimeout time.Duration
+	CommitTimeout                time.Duration
+
+	VerboseLog bool
 }
 
 func DefaultConfig(servers []string, localID string) RaftConfig {
 	return RaftConfig{
-		MaxInflightingEntries: 2048,
-		MaxBatchAppendEntries: 64,
-		MaxBatchApplyEntries:  64,
-		ElectionTimeout:       300 * time.Millisecond,
-		Servers:               servers,
-		LocalID:               localID,
-		VerboseLog:            false,
+		MaxInflightingEntries:        2048,
+		MaxBatchAppendEntries:        64,
+		MaxBatchApplyEntries:         64,
+		SnapshotInterval:             10 * time.Minute,
+		ElectionTimeout:              300 * time.Millisecond,
+		CommitTimeout:                50 * time.Millisecond,
+		MaxReplicationBackoffTimeout: 3 * time.Second,
+		Servers:                      servers,
+		LocalID:                      localID,
+		VerboseLog:                   false,
 	}
 }
 
 func (r *RaftNode) Apply(ctx context.Context, data []byte) (interface{}, error) {
-	future := &ApplyFuture{
+	future := ApplyFuture{
 		Entry: &raftpb.LogEntry{
 			Data:    data,
 			LogType: raftpb.LogEntry_LogCommand,
@@ -50,14 +59,13 @@ func (r *RaftNode) Apply(ctx context.Context, data []byte) (interface{}, error) 
 	}
 }
 
-func (r *RaftNode) CommittedChan() <-chan *DataFuture {
-	return r.committedCh
-}
-
 func (r *RaftNode) GetLeader() string {
 	return r.leader
 }
 
 func (r *RaftNode) CheckQuit() <-chan struct{} {
 	return r.ctx.Done()
+}
+func (r *RaftNode) Snapshot() {
+	util.AsyncNotify(r.notifySnapshotCh)
 }

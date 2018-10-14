@@ -5,7 +5,6 @@ import (
 	"github.com/dzdx/raft/raftpb"
 	"github.com/golang/protobuf/proto"
 	"github.com/dzdx/raft/store"
-	"log"
 	"time"
 )
 
@@ -28,6 +27,9 @@ type raftState struct {
 	lastVotedFor  string
 	lastVotedTerm uint64
 	currentTerm   uint64
+
+	lastLogIndex uint64
+	lastLogTerm  uint64
 
 	lastApplied uint64
 	commitIndex uint64
@@ -94,7 +96,7 @@ func (r *RaftNode) restoreMeta() {
 			lastVotedFor = None
 			lastVotedTerm = 0
 		} else {
-			log.Fatalf("read last voted failed %s", err.Error())
+			r.logger.Fatalf("read last voted failed %s", err.Error())
 		}
 	} else {
 		var lastVoted *raftpb.LastVoted
@@ -110,12 +112,35 @@ func (r *RaftNode) restoreMeta() {
 		if _, ok := err.(*store.ErrNotFound); ok {
 			currentTerm = 0
 		} else {
-			log.Fatalf("read current term failed %s", err.Error())
+			r.logger.Fatalf("read current term failed %s", err.Error())
 		}
 	} else {
 		currentTerm = binary.BigEndian.Uint64(data)
 	}
 	r.currentTerm = currentTerm
+
+	var lastIndex, lastTerm uint64
+	var err error
+	lastIndex = r.entryStore.LastIndex()
+	if lastIndex != 0 {
+		var lastLog *raftpb.LogEntry
+		if lastLog, err = r.entryStore.GetEntry(lastIndex); err != nil {
+			if _, ok := err.(*store.ErrNotFound); !ok {
+				r.logger.Fatalf("read last index from entry store failed")
+			}
+		} else {
+			lastTerm = lastLog.Term
+		}
+	}
+	if lastIndex == 0 {
+		// log store is empty, fetch index and term from snapshot
+		if snap := r.snapshoter.Last(); snap != nil {
+			lastIndex = snap.Index
+			lastTerm = snap.Term
+		}
+	}
+	r.lastLogIndex = lastIndex
+	r.lastLogTerm = lastTerm
 }
 
 func (r *RaftNode) getState() State {
@@ -141,4 +166,17 @@ func (r *RaftNode) getLastContactLeader() (leaderID string, lastContact time.Tim
 	leaderID = r.leader
 	lastContact = r.lastContactLeader
 	return
+}
+
+func (r *RaftNode) setLastLog(term uint64, index uint64) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.lastLogTerm = term
+	r.lastLogIndex = index
+}
+
+func (r *RaftNode) getLastLog() (term uint64, index uint64) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return r.lastLogTerm, r.lastLogIndex
 }

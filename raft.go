@@ -11,10 +11,12 @@ import (
 	"context"
 	"github.com/sirupsen/logrus"
 	"errors"
+	"github.com/dzdx/raft/snapshot"
 )
 
 var (
 	ErrNotLeader = errors.New("not leader")
+	ErrNoLeader  = errors.New("no leader")
 )
 
 type leaderState struct {
@@ -23,18 +25,20 @@ type leaderState struct {
 	commitment         *commitment
 	followers          map[string]*Progress
 	waitGroup          wait.Group
-	inflightingFutures map[uint64]*ApplyFuture
+	inflightingFutures map[uint64]ApplyFuture
 	dispatchedIndex    uint64
 }
 
 type RaftNode struct {
 	raftState
 
-	config      RaftConfig
-	applyCh     chan *ApplyFuture
-	committedCh chan *DataFuture
+	config        RaftConfig
+	applyCh       chan ApplyFuture
+	committedCh   chan DataFuture
+	fsmSnapshotCh chan snapshotFuture
 
-	notifyApplyCh chan struct{}
+	notifyApplyCh    chan struct{}
+	notifySnapshotCh chan struct{}
 
 	waitGroup   wait.Group
 	ctx         context.Context
@@ -42,9 +46,12 @@ type RaftNode struct {
 	mutex       sync.Mutex
 	leaderState *leaderState
 
-	entryStore store.IStore
-	metaStore  store.IStore
-	transport  transport.ITransport
+	entryStore      store.IStore
+	metaStore       store.IStore
+	transport       transport.ITransport
+	fsm             IFsm
+	snapshoter      snapshot.ISnapShotStore
+	currentSnapshot string
 
 	logger *logrus.Logger
 
@@ -86,11 +93,63 @@ func (r *RaftNode) processRPC(rpc *transport.RPC) {
 		r.processAppendEntries(rpc, req)
 	case *raftpb.RequestVoteReq:
 		r.processRequestVote(rpc, req)
+	case *raftpb.InstallSnapshotReq:
+		r.processInstallSnapshot(rpc, req)
 	}
 }
 
 func (r *RaftNode) lastIndex() uint64 {
-	return r.entryStore.LastIndex()
+	_, index := r.getLastLog()
+	return index
+}
+
+func (r *RaftNode) processInstallSnapshot(rpc *transport.RPC, req *raftpb.InstallSnapshotReq) {
+	resp := &raftpb.InstallSnapshotResp{Success: false}
+	defer func() {
+		resp.Term = r.getCurrentTerm()
+		rpc.Respond(resp, nil)
+	}()
+	var err error
+	var entry snapshot.ISnapShotEntry
+	if req.Offset == 0 {
+		if entry, err = r.snapshoter.Create(req.LastTerm, req.LastIndex); err != nil {
+			r.logger.Error(err)
+			return
+		}
+	} else {
+		if entry, err = r.snapshoter.Open(r.currentSnapshot); err != nil {
+			r.logger.Error(err)
+			return
+		}
+	}
+	r.currentSnapshot = entry.ID()
+	if _, err = entry.Write(req.Data); err != nil {
+		r.logger.Error(err)
+		entry.Cancel()
+		return
+	}
+	if err = entry.Close(); err != nil {
+		r.logger.Error(err)
+		entry.Cancel()
+		return
+	}
+	if req.Done {
+		if err = r.fsm.Restore(r.ctx, entry.Content()); err != nil {
+			r.logger.Error(err)
+			entry.Cancel()
+			return
+		} else {
+			if req.LastIndex > r.lastIndex() {
+				r.setLastLog(req.LastTerm, req.LastIndex)
+				r.compactLog(req.LastIndex)
+				r.lastApplied = req.LastIndex
+			}
+		}
+	}
+	r.setState(Follower)
+	r.setLastContactLeader(req.LeaderID)
+	r.resetElectionTimer()
+	resp.Success = true
 }
 
 func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEntriesReq) {
@@ -115,14 +174,21 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 		if req.PrevLogIndex > r.lastIndex() {
 			return
 		}
-		var prevLog *raftpb.LogEntry
-		var err error
-		if prevLog, err = r.entryStore.GetEntry(req.PrevLogIndex); err != nil {
-			r.logger.Errorf("get entry failed: %s", err.Error())
-			return
-		}
-		if prevLog.Term != req.PrevLogTerm {
-			return
+		lastSnap := r.snapshoter.Last()
+		if lastSnap != nil && lastSnap.Index == req.PrevLogIndex {
+			if req.PrevLogTerm != lastSnap.Term {
+				return
+			}
+		} else {
+			var prevLog *raftpb.LogEntry
+			var err error
+			if prevLog, err = r.entryStore.GetEntry(req.PrevLogIndex); err != nil {
+				r.logger.Errorf("get entry failed: %s", err.Error())
+				return
+			}
+			if prevLog.Term != req.PrevLogTerm {
+				return
+			}
 		}
 	}
 
@@ -144,10 +210,25 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 			}
 		}
 
+		var lastIndex = r.lastIndex()
+		defer func() {
+			term, index := r.getLastLog()
+			if lastLog, err := r.entryStore.GetEntry(lastIndex); err != nil {
+				r.logger.Error(err)
+				resp.Success = false
+			} else {
+				if lastLog.Term != term || lastLog.Index != index {
+					r.setLastLog(lastLog.Term, lastLog.Index)
+				}
+			}
+		}()
 		// delete conflict log entries
 		if err := r.entryStore.DeleteEntries(req.Entries[newStart].Index, r.lastIndex()); err != nil {
 			r.logger.Errorf("delete entries failed: %s", err.Error())
 			return
+		}
+		if req.Entries[newStart].Index <= r.lastIndex() {
+			lastIndex = req.Entries[newStart].Index - 1
 		}
 
 		newEntries := req.Entries[newStart:]
@@ -155,6 +236,7 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 			r.logger.Errorf("append entries failed: %s", err.Error())
 			return
 		}
+		lastIndex = req.Entries[len(req.Entries)-1].Index
 	}
 
 	if req.LeaderCommitIndex > 0 {
@@ -200,7 +282,10 @@ func (r *RaftNode) processRequestVote(rpc *transport.RPC, req *raftpb.RequestVot
 		}
 		lastLogTerm = lastLog.Term
 	}
-	if req.LastLogIndex < lastLogIndex || req.LastLogTerm < lastLogTerm {
+	if req.LastLogTerm < lastLogTerm {
+		return
+	}
+	if req.LastLogTerm == lastLogTerm && req.LastLogIndex < lastLogIndex {
 		// candidate logs not complete
 		return
 	}
@@ -305,6 +390,7 @@ func (r *RaftNode) leaderCtx() func() {
 				serverID:   s,
 				nextIndex:  r.lastIndex() + 1,
 				notifyCh:   make(chan struct{}, 1),
+				state:      syncReplication,
 			}
 		}
 	}
@@ -314,7 +400,7 @@ func (r *RaftNode) leaderCtx() func() {
 		commitment:         commitment,
 		followers:          followers,
 		waitGroup:          wait.Group{},
-		inflightingFutures: make(map[uint64]*ApplyFuture),
+		inflightingFutures: make(map[uint64]ApplyFuture),
 		dispatchedIndex:    r.entryStore.LastIndex(),
 	}
 	for _, f := range leaderState.followers {
@@ -327,13 +413,13 @@ func (r *RaftNode) leaderCtx() func() {
 		})
 	}
 	r.leaderState = leaderState
-	noop := &ApplyFuture{
+	noop := ApplyFuture{
 		Entry: &raftpb.LogEntry{
 			LogType: raftpb.LogEntry_LogNoop,
 		},
 	}
 	noop.init()
-	r.dispatch([]*ApplyFuture{noop})
+	r.dispatch([]ApplyFuture{noop})
 	return func() {
 		r.leaderState.cancelFunc()
 		r.leaderState.waitGroup.Wait()
@@ -378,7 +464,7 @@ func (r *RaftNode) runLeader() {
 		case <-r.leaderState.ctx.Done():
 			return
 		case future := <-r.applyCh:
-			futures := []*ApplyFuture{future}
+			futures := []ApplyFuture{future}
 		L1:
 			for {
 				select {
@@ -391,7 +477,6 @@ func (r *RaftNode) runLeader() {
 			r.dispatch(futures)
 		case <-r.leaderState.commitment.commitCh:
 			r.leaderCommit(r.leaderState.commitment.commitIndex)
-			r.notifyFollowers()
 		}
 	}
 }
@@ -403,16 +488,33 @@ func (r *RaftNode) leaderCommit(toIndex uint64) {
 	}
 	if entry.Term == r.currentTerm {
 		r.commitTo(toIndex)
+		r.leaderState.waitGroup.Start(func() {
+			select {
+			case <-r.leaderState.ctx.Done():
+				return
+			case <-time.After(util.RandomDuration(r.config.CommitTimeout)):
+			}
+			for _, p := range r.leaderState.followers {
+				if p.commitIndex < r.commitIndex {
+					p.notify()
+				}
+			}
+		})
 	}
 }
 
 func (r *RaftNode) commitTo(toIndex uint64) {
-	r.commitIndex = util.MaxUint64(r.commitIndex, toIndex)
-	util.AsyncNotify(r.notifyApplyCh)
-	r.logger.Debugf("commit log to %d", r.commitIndex)
+	if toIndex > r.commitIndex {
+		r.commitIndex = util.MaxUint64(r.commitIndex, toIndex)
+		util.AsyncNotify(r.notifyApplyCh)
+		r.logger.Debugf("commit log to %d", r.commitIndex)
+	}
 }
 
-func (r *RaftNode) dispatch(futures []*ApplyFuture) {
+func (r *RaftNode) dispatch(futures []ApplyFuture) {
+	if len(futures) == 0 {
+		return
+	}
 	entries := make([]*raftpb.LogEntry, len(futures))
 	dispatchedIndex := r.leaderState.dispatchedIndex
 	for i, future := range futures {
@@ -430,11 +532,16 @@ func (r *RaftNode) dispatch(futures []*ApplyFuture) {
 		r.stepdown()
 		return
 	}
+	lastLog := entries[len(entries)-1]
+	r.setLastLog(lastLog.Term, lastLog.Index)
+
 	r.leaderState.dispatchedIndex = dispatchedIndex
 	if len(entries) > 0 {
 		r.leaderState.commitment.SetMatchIndex(r.localID, r.lastIndex())
 	}
-	r.notifyFollowers()
+	for _, p := range r.leaderState.followers {
+		p.notify()
+	}
 	r.logger.Debugf("dispatch log to %d", r.lastIndex())
 }
 
@@ -462,7 +569,7 @@ func (r *RaftNode) run() {
 	}
 }
 
-func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.ITransport) *RaftNode {
+func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.ITransport, fsm IFsm, snapshoter snapshot.ISnapShotStore) *RaftNode {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	servers := make(map[string]struct{}, len(config.Servers))
@@ -478,10 +585,12 @@ func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.IT
 		},
 		config: config,
 
-		applyCh:     make(chan *ApplyFuture, config.MaxInflightingEntries),
-		committedCh: make(chan *DataFuture, config.MaxInflightingEntries),
+		applyCh:     make(chan ApplyFuture, config.MaxInflightingEntries),
+		committedCh: make(chan DataFuture, config.MaxInflightingEntries),
 
-		notifyApplyCh: make(chan struct{}, 1),
+		notifyApplyCh:    make(chan struct{}, 1),
+		notifySnapshotCh: make(chan struct{}, 1),
+		fsmSnapshotCh:    make(chan snapshotFuture),
 
 		waitGroup:  wait.Group{},
 		ctx:        ctx,
@@ -491,11 +600,14 @@ func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.IT
 		entryStore: storage,
 		metaStore:  storage,
 		transport:  transport,
+		fsm:        fsm,
+		snapshoter: snapshoter,
 	}
 	r.restoreMeta()
 	r.setupLogger()
 	r.waitGroup.Start(transport.Serve)
 	r.waitGroup.Start(r.runFSM)
+	r.waitGroup.Start(r.runSnapshot)
 	r.waitGroup.Start(r.run)
 	return r
 }

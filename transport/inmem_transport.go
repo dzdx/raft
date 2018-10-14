@@ -11,20 +11,22 @@ type InmemNetwork struct {
 	transports map[string]*InmemTransport
 }
 
-func NewInmemNetwork(servers []string) *InmemNetwork {
-	num := len(servers)
-	transports := make(map[string]*InmemTransport, num)
-	for i := 0; i < num; i++ {
-		transports[servers[i]] = NewInmemTransport(servers[i])
-	}
-	for i, tranC := range transports {
-		for j, tranS := range transports {
-			if i != j {
-				tranC.Connect(tranS)
-			}
+func NewInmemNetwork() *InmemNetwork {
+	transports := make(map[string]*InmemTransport, 0)
+	n := &InmemNetwork{transports: transports}
+	return n
+}
+
+func (n *InmemNetwork) Join(serverID string) *InmemTransport {
+	trans := NewInmemTransport(serverID)
+	n.transports[serverID] = trans
+	for ID, tranC := range n.transports {
+		if ID != serverID {
+			trans.Connect(tranC)
+			tranC.Connect(trans)
 		}
 	}
-	return &InmemNetwork{transports: transports}
+	return trans
 }
 
 func (n *InmemNetwork) GetTrans(serverID string) *InmemTransport {
@@ -93,6 +95,14 @@ func (t *InmemTransport) AppendEntries(ctx context.Context, serverID string, req
 		return nil, err
 	}
 	return resp.(*raftpb.AppendEntriesResp), nil
+}
+
+func (t *InmemTransport) InstallSnapshot(ctx context.Context, serverID string, req *raftpb.InstallSnapshotReq) (*raftpb.InstallSnapshotResp, error) {
+	resp, err := t.sendRPC(ctx, serverID, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*raftpb.InstallSnapshotResp), nil
 }
 
 func (t *InmemTransport) readNetworkInfo(serverID string) (sendReliability, recvReliability float64) {

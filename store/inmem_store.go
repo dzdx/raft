@@ -9,7 +9,8 @@ import (
 type InmemStore struct {
 	mutex     sync.Mutex
 	entrys    map[uint64]raftpb.LogEntry
-	lastIndex uint64
+	lowIndex  uint64
+	highIndex uint64
 	kv        map[string][]byte
 }
 
@@ -25,7 +26,10 @@ func (s *InmemStore) AppendEntries(es []*raftpb.LogEntry) error {
 	defer s.mutex.Unlock()
 	for _, entry := range es {
 		s.entrys[entry.Index] = *entry
-		s.lastIndex = util.MaxUint64(s.lastIndex, entry.Index)
+		if s.lowIndex == 0 {
+			s.lowIndex = entry.Index
+		}
+		s.highIndex = util.MaxUint64(s.highIndex, entry.Index)
 	}
 	return nil
 }
@@ -34,9 +38,12 @@ func (s *InmemStore) GetEntries(start, end uint64) ([]*raftpb.LogEntry, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	entrys := make([]*raftpb.LogEntry, end-start+1)
-	for i := uint64(0); i < end-start+1; i++ {
-		e := s.entrys[start+i]
-		entrys[i] = &e
+	for i := start; i <= end; i++ {
+		e, ok := s.entrys[i]
+		if !ok {
+			return nil, NewErrNotFound("entry not found: %v", i)
+		}
+		entrys[i-start] = &e
 	}
 	return entrys, nil
 }
@@ -57,13 +64,29 @@ func (s *InmemStore) DeleteEntries(start, end uint64) error {
 	for i := start; i <= end; i++ {
 		delete(s.entrys, i)
 	}
-	s.lastIndex = start - 1
+	if start <= s.lowIndex {
+		s.lowIndex = end + 1
+	}
+	if end > s.highIndex {
+		s.highIndex = start - 1
+	}
+	if s.lowIndex > s.highIndex {
+		s.lowIndex = 0
+		s.highIndex = 0
+	}
 	return nil
 }
+
+func (s *InmemStore) FirstIndex() uint64 {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.lowIndex
+}
+
 func (s *InmemStore) LastIndex() uint64 {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	return s.lastIndex
+	return s.highIndex
 }
 
 func (s *InmemStore) SetKV(key string, value []byte) error {

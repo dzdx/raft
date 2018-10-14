@@ -7,7 +7,48 @@ import (
 	"github.com/dzdx/raft/raftexample/examplepb"
 	"github.com/golang/protobuf/proto"
 	"fmt"
+	"io"
+	"encoding/json"
+	"io/ioutil"
+	"bytes"
 )
+
+type ExampleFSM struct {
+	kv *KvStore
+}
+
+func (fsm *ExampleFSM) Apply(ctx context.Context, futures []raft.DataFuture) {
+	for _, f := range futures {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		f.Respond(fsm.kv.applyData(f.Data))
+	}
+}
+
+func (fsm *ExampleFSM) Restore(ctx context.Context, reader io.ReadCloser) error {
+	data, err := ioutil.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	var kv map[string]string
+	err = json.Unmarshal(data, kv)
+	if err != nil {
+		return err
+	}
+	fsm.kv.kv = kv
+	return nil
+}
+
+func (fsm *ExampleFSM) Snapshot(ctx context.Context) (io.ReadCloser, error) {
+	if data, err := json.Marshal(fsm.kv.kv); err != nil {
+		return nil, err
+	} else {
+		return ioutil.NopCloser(bytes.NewBuffer(data)), nil
+	}
+}
 
 type ErrKeyNotFound struct {
 	msg string
@@ -25,16 +66,19 @@ type KvStore struct {
 	kv         map[string]string
 }
 
-func newKvStore(raftNode *raft.RaftNode) *KvStore {
+func newKvStore() *KvStore {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	k := &KvStore{
 		ctx:        ctx,
 		cancelFunc: cancelFunc,
 		waitGroup:  wait.Group{},
 		kv:         make(map[string]string),
-		raftNode:   raftNode,
 	}
 	return k
+}
+
+func (k *KvStore) FSMFactory() *ExampleFSM {
+	return &ExampleFSM{k}
 }
 
 func (k *KvStore) WithContext(ctx context.Context) {
@@ -44,8 +88,8 @@ func (k *KvStore) WithContext(ctx context.Context) {
 	k.cancelFunc = cancelFunc
 }
 
-func (k *KvStore) run() {
-	k.waitGroup.Start(k.runApply)
+func (k *KvStore) SetRaftNode(node *raft.RaftNode) {
+	k.raftNode = node
 }
 
 func (k *KvStore) applyData(data []byte) (interface{}, error) {
@@ -60,15 +104,6 @@ func (k *KvStore) applyData(data []byte) (interface{}, error) {
 		delete(k.kv, kv.Key)
 	}
 	return "success", nil
-}
-
-func (k *KvStore) runApply() {
-	for {
-		select {
-		case future := <-k.raftNode.CommittedChan():
-			future.Respond(k.applyData(future.Data))
-		}
-	}
 }
 
 func (k *KvStore) GetKey(ctx context.Context, key string) (string, error) {

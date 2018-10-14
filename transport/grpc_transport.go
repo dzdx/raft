@@ -78,6 +78,14 @@ func (t *GRPCTransport) AppendEntries(ctx context.Context, serverID string, req 
 	return resp, err
 }
 
+func (t *GRPCTransport) InstallSnapshot(ctx context.Context, serverID string, req *raftpb.InstallSnapshotReq) (*raftpb.InstallSnapshotResp, error) {
+	client := t.clients[serverID]
+	ctx, cancelFunc := context.WithCancel(ctx)
+	defer cancelFunc()
+	resp, err := client.InstallSnapshot(ctx, req)
+	return resp, err
+}
+
 type grpcRaftApp struct {
 	handlerChan chan *RPC
 }
@@ -106,6 +114,22 @@ func (app *grpcRaftApp) AppendEntries(ctx context.Context, req *raftpb.AppendEnt
 	select {
 	case rpcResp := <-rpc.Response():
 		return rpcResp.Resp.(*raftpb.AppendEntriesResp), rpcResp.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return nil, nil
+}
+
+func (app *grpcRaftApp) InstallSnapshot(ctx context.Context, req *raftpb.InstallSnapshotReq) (*raftpb.InstallSnapshotResp, error) {
+	rpc := NewRPC(req)
+	select {
+	case app.handlerChan <- rpc:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case rpcResp := <-rpc.Response():
+		return rpcResp.Resp.(*raftpb.InstallSnapshotResp), rpcResp.Err
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

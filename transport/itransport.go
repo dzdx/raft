@@ -46,6 +46,7 @@ type ITransport interface {
 	RecvRPC() <-chan *RPC
 	RequestVote(ctx context.Context, serverID string, req *raftpb.RequestVoteReq) (*raftpb.RequestVoteResp, error)
 	AppendEntries(ctx context.Context, serverID string, req *raftpb.AppendEntriesReq) (*raftpb.AppendEntriesResp, error)
+	InstallSnapshot(ctx context.Context, serverID string, req *raftpb.InstallSnapshotReq) (*raftpb.InstallSnapshotResp, error)
 	Serve()
 	Shutdown()
 }

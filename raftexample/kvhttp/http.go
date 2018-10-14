@@ -89,7 +89,6 @@ func (n *Node) redirectToLeader(c *gin.Context) {
 }
 
 func (n *Node) Run() {
-	n.waitGroup.Start(n.kvstore.run)
 	if err := n.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("listen: %s \n", err)
 	}
@@ -117,17 +116,18 @@ type NodeConfig struct {
 	LocalID   string
 }
 
-func newRaftNode(config NodeConfig) *raft.RaftNode {
+func newRaftNode(config NodeConfig, fsm raft.IFsm) *raft.RaftNode {
 	servers := make([]string, 0, len(config.Raftaddrs))
 	for ID := range config.Raftaddrs {
 		servers = append(servers, ID)
 	}
 
 	raftConfig := raft.DefaultConfig(servers, config.LocalID)
-	//raftConfig.VerboseLog = true
+
+	raftConfig.VerboseLog = true
 	storage := store.NewInmemStore()
 	trans := transport.NewGRPCTransport(config.Raftaddrs, config.LocalID)
-	node := raft.NewRaftNode(raftConfig, storage, trans)
+	node := raft.NewRaftNode(raftConfig, storage, trans, fsm)
 	return node
 }
 
@@ -144,8 +144,9 @@ func NewNode(config NodeConfig) *Node {
 		Addr:    webaddr,
 		Handler: router,
 	}
-	raftNode := newRaftNode(config)
-	kvstore := newKvStore(raftNode)
+	kvstore := newKvStore()
+	raftNode := newRaftNode(config, kvstore.FSMFactory())
+	kvstore.SetRaftNode(raftNode)
 	node := &Node{
 		config:    config,
 		http:      srv,

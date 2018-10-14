@@ -38,8 +38,14 @@ func AtOnce() <-chan time.Time {
 	return ch
 }
 
-func BackoffTimeout(base time.Duration, backoff int) <-chan time.Time {
-	return time.After(base * time.Duration(2^(backoff-1)))
+func BackoffDuration(base time.Duration, backoff int) time.Duration {
+	return base * time.Duration(2^(backoff-1))
+}
+func MinDuration(t1 time.Duration, t2 time.Duration) time.Duration {
+	if t1 > t2 {
+		return t2
+	}
+	return t1
 }
 
 func init() {

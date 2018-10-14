@@ -46,8 +46,23 @@ message AppendEntriesResp {
     uint64 lastLogIndex = 3;
 }
 
+message InstallSnapshotReq {
+    uint64 term = 1;
+    string leaderID = 2;
+    uint64 lastIndex = 3;
+    uint64 lastTerm = 4;
+    uint64 offset = 5;
+    bytes data = 6;
+    bool done = 7;
+}
+message InstallSnapshotResp {
+    uint64 term = 1;
+    bool success = 2;
+}
+
 
 service RaftService {
     rpc RequestVote (RequestVoteReq) returns (RequestVoteResp);
     rpc AppendEntries (AppendEntriesReq) returns (AppendEntriesResp);
+    rpc InstallSnapshot (InstallSnapshotReq) returns (InstallSnapshotResp);
 }

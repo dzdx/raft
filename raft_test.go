@@ -10,6 +10,10 @@ import (
 	"strconv"
 	"github.com/dzdx/raft/util/wait"
 	"os"
+	"io"
+	"github.com/dzdx/raft/snapshot"
+	"bytes"
+	"io/ioutil"
 )
 
 func testcaseCtx() func() {
@@ -19,165 +23,172 @@ func testcaseCtx() func() {
 	}
 }
 
-func newTestCluster(servers []string) (*transport.InmemNetwork, map[string]*RaftNode) {
-	network := transport.NewInmemNetwork(servers)
-	nodes := make(map[string]*RaftNode, len(servers))
-	for _, ID := range servers {
-		config := DefaultConfig(servers, ID)
-		config.VerboseLog = false
-		storage := store.NewInmemStore()
-		trans := network.GetTrans(ID)
-		node := NewRaftNode(config, storage, trans)
-		time.Sleep(100 * time.Millisecond)
-		go func() {
-			for {
-				select {
-				case future := <-node.CommittedChan():
-					future.Respond(future.Data, nil)
-				case <-node.CheckQuit():
-					return
-				}
-			}
-		}()
-		nodes[ID] = node
+type testFSM struct{}
+
+func (f *testFSM) Apply(ctx context.Context, futures []DataFuture) {
+	for _, f := range futures {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		f.Respond(f.Data, nil)
 	}
-	return network, nodes
 }
 
-func getLeaderNode(nodes map[string]*RaftNode) *RaftNode {
-	for ID, node := range nodes {
-		if node.state == Leader {
-			return nodes[ID]
+func (f *testFSM) Snapshot(ctx context.Context) (io.ReadCloser, error) {
+	return ioutil.NopCloser(bytes.NewBuffer([]byte("snapshot"))), nil
+}
+
+func (f *testFSM) Restore(ctx context.Context, reader io.ReadCloser) error {
+	return nil
+}
+
+func newClusterManager(servers []string) *clusterManager {
+	m := &clusterManager{
+		network: transport.NewInmemNetwork(),
+		nodes:   make(map[string]*RaftNode),
+	}
+	for _, server := range servers {
+		m.newRaftNode(servers, server)
+		time.Sleep(50 * time.Millisecond)
+	}
+	return m
+}
+
+type clusterManager struct {
+	nodes   map[string]*RaftNode
+	network *transport.InmemNetwork
+}
+
+func (m *clusterManager) newRaftNode(servers []string, localID string) *RaftNode {
+	config := DefaultConfig(servers, localID)
+	//config.VerboseLog = true
+	config.MaxReplicationBackoffTimeout = 100 * time.Millisecond
+	storage := store.NewInmemStore()
+	trans := m.network.Join(localID)
+	fsm := &testFSM{}
+	snapshotStore := snapshot.NewInmemSnapShotStore()
+	node := NewRaftNode(config, storage, trans, fsm, snapshotStore)
+	m.nodes[localID] = node
+	return node
+}
+func (m *clusterManager) shutdown() {
+	wg := wait.Group{}
+	for _, node := range m.nodes {
+		wg.Start(node.Shutdown)
+	}
+	wg.Wait()
+}
+func (m *clusterManager) getLeader() *RaftNode {
+	for _, n := range m.nodes {
+		if n.state == Leader {
+			return n
 		}
 	}
 	return nil
 }
-
-func shutdownNodes(nodes map[string]*RaftNode) {
-	wg := wait.Group{}
-	for _, node := range nodes {
-		wg.Start(node.Shutdown)
+func (m *clusterManager) apply(ctx context.Context, data []byte) (interface{}, error) {
+	leader := m.getLeader()
+	if leader == nil {
+		return nil, ErrNoLeader
 	}
-	wg.Wait()
+	return leader.Apply(ctx, data)
 }
 
 func TestElectionLeader(t *testing.T) {
 	defer testcaseCtx()()
 
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	_, nodes := newTestCluster(inmemServers)
+	manager := newClusterManager([]string{"1", "2", "3"})
 	time.Sleep(1 * time.Second)
 	leaderCount := 0
-	for _, node := range nodes {
+	for _, node := range manager.nodes {
 		if node.state == Leader {
 			leaderCount++
 		}
 	}
 	assert.Equal(t, leaderCount, 1)
-	shutdownNodes(nodes)
+	manager.shutdown()
 }
 
 func TestElectionNoLeader(t *testing.T) {
 	defer testcaseCtx()()
 
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	network, nodes := newTestCluster(inmemServers)
-	network.SetPartition([]string{"1"}, []string{"2"}, []string{"3"})
+	manager := newClusterManager([]string{"1", "2", "3"})
+	manager.network.SetPartition([]string{"1"}, []string{"2"}, []string{"3"})
 	time.Sleep(1 * time.Second)
 	leaderCount := 0
-	for _, node := range nodes {
+	for _, node := range manager.nodes {
 		if node.state == Leader {
 			leaderCount++
 		}
 	}
 	assert.Equal(t, leaderCount, 0)
-	shutdownNodes(nodes)
+	manager.shutdown()
 }
 
 func TestLeaderLeaseAndReElectionLeader(t *testing.T) {
 
 	defer testcaseCtx()()
 
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	network, nodes := newTestCluster(inmemServers)
+	manager := newClusterManager([]string{"1", "2", "3"})
 	time.Sleep(1 * time.Second)
-	oldLeader := getLeaderNode(nodes)
+	oldLeader := manager.getLeader()
 
 	otherPartition := make([]string, 0)
-	for ID := range nodes {
+	for ID := range manager.nodes {
 		if ID != oldLeader.localID {
 			otherPartition = append(otherPartition, ID)
 		}
 	}
-	network.SetPartition([]string{oldLeader.localID}, otherPartition)
+	manager.network.SetPartition([]string{oldLeader.localID}, otherPartition)
 	time.Sleep(1 * time.Second)
 
 	assert.NotEqual(t, oldLeader.state, Leader)
 
 	leaderCount := 0
 	for _, ID := range otherPartition {
-		if nodes[ID].state == Leader {
+		if manager.nodes[ID].state == Leader {
 			leaderCount++
 		}
 	}
 	assert.Equal(t, leaderCount, 1)
-	shutdownNodes(nodes)
-}
-
-func TestMostLogsNodeBecomeLeader(t *testing.T) {
-	// TODO
+	manager.shutdown()
 }
 
 func TestAppendEntries(t *testing.T) {
 	defer testcaseCtx()()
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	_, nodes := newTestCluster(inmemServers)
+	manager := newClusterManager([]string{"1", "2", "3"})
 	time.Sleep(1 * time.Second)
-	leader := getLeaderNode(nodes)
 	for i := 0; i < 1000; i++ {
 		source := []byte(strconv.Itoa(i))
-		resp, err := leader.Apply(context.Background(), source)
+		resp, err := manager.apply(context.Background(), source)
 		assert.Equal(t, resp, source)
 		assert.Equal(t, err, nil)
 	}
-	shutdownNodes(nodes)
+	manager.shutdown()
 }
 
 func TestNetworkPartitionAppendEntries(t *testing.T) {
 	defer testcaseCtx()()
 
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	network, nodes := newTestCluster(inmemServers)
-	network.SetPartition([]string{"1"}, []string{"2", "3"})
+	manager := newClusterManager([]string{"1", "2", "3"})
+	manager.network.SetPartition([]string{"1"}, []string{"2", "3"})
 	time.Sleep(1 * time.Second)
-	leader := getLeaderNode(nodes)
 	for i := 0; i < 1000; i++ {
 		source := []byte(strconv.Itoa(i))
-		resp, err := leader.Apply(context.Background(), source)
+		resp, err := manager.apply(context.Background(), source)
 		assert.Equal(t, resp, source)
 		assert.Equal(t, err, nil)
 	}
-	shutdownNodes(nodes)
+	manager.shutdown()
 }
 
 func TestConcurrentAppendEntries(t *testing.T) {
 	defer testcaseCtx()()
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	_, nodes := newTestCluster(inmemServers)
+	manager := newClusterManager([]string{"1", "2", "3"})
 	time.Sleep(1 * time.Second)
-	leader := getLeaderNode(nodes)
+	leader := manager.getLeader()
 	waitGroup := wait.Group{}
 	for i := 0; i < 1000; i++ {
 		source := []byte(strconv.Itoa(i))
@@ -194,43 +205,103 @@ func TestConcurrentAppendEntries(t *testing.T) {
 		assert.Equal(t, err, nil)
 		assert.Equal(t, entry.Index, i)
 	}
-	shutdownNodes(nodes)
+	manager.shutdown()
 }
 
 func TestFollowerCommitInShortTime(t *testing.T) {
 	defer testcaseCtx()()
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	_, nodes := newTestCluster(inmemServers)
+	manager := newClusterManager([]string{"1", "2", "3"})
 	time.Sleep(1 * time.Second)
-	leader := getLeaderNode(nodes)
+	leader := manager.getLeader()
 	for i := 0; i < 100; i++ {
 		source := []byte(strconv.Itoa(i))
 		resp, err := leader.Apply(context.Background(), source)
 		assert.Equal(t, resp, source)
 		assert.Equal(t, err, nil)
 	}
-	time.Sleep(50 * time.Millisecond)
-	for _, node := range nodes {
+	time.Sleep(200 * time.Millisecond)
+	for _, node := range manager.nodes {
 		assert.Equal(t, leader.commitIndex, node.commitIndex)
 		assert.Equal(t, leader.lastApplied, node.lastApplied)
 	}
-	shutdownNodes(nodes)
+	manager.shutdown()
 }
 
 func TestTriggerSnapshot(t *testing.T) {
 	defer testcaseCtx()()
-	var inmemServers = []string{
-		"1", "2", "3",
-	}
-	_, nodes := newTestCluster(inmemServers)
+	manager := newClusterManager([]string{"1", "2", "3"})
 	time.Sleep(1 * time.Second)
-	leader := getLeaderNode(nodes)
+	leader := manager.getLeader()
 	for i := 0; i < 1000; i++ {
-		resp, err := leader.Apply(context.Background(), []byte("1"))
-		assert.Equal(t, resp, []byte("1"))
-		assert.Equal(t, err, nil)
+		leader.Apply(context.Background(), []byte("1"))
 	}
-	shutdownNodes(nodes)
+	assert.Equal(t, leader.entryStore.LastIndex(), uint64(1001))
+	leader.Snapshot()
+	time.Sleep(50 * time.Millisecond)
+	assert.NotEqual(t, leader.snapshoter.Last(), nil)
+	assert.Equal(t, leader.entryStore.FirstIndex(), uint64(0))
+	assert.Equal(t, leader.entryStore.LastIndex(), uint64(0))
+	leader.Apply(context.Background(), []byte("1"))
+	assert.Equal(t, leader.entryStore.FirstIndex(), uint64(1002))
+	assert.Equal(t, leader.entryStore.LastIndex(), uint64(1002))
+	manager.shutdown()
+}
+func TestSendInstallSnapshotToBackwardFollower(t *testing.T) {
+	manager := newClusterManager([]string{"1", "2", "3"})
+	manager.network.SetPartition([]string{"1", "2"}, []string{"3"})
+	n3 := manager.nodes["3"]
+	time.Sleep(1 * time.Second)
+	leader := manager.getLeader()
+	for i := 0; i < 100; i++ {
+		leader.Apply(context.Background(), []byte("1"))
+	}
+	assert.Equal(t, n3.entryStore.LastIndex(), uint64(0))
+	leader.Snapshot()
+
+	n3.resetElectionTimer()
+	n3.currentTerm = leader.currentTerm
+
+	manager.network.SetPartition([]string{"1", "2", "3"})
+	time.Sleep(200 * time.Millisecond)
+
+	assert.Equal(t, n3.lastIndex(), uint64(101))
+	assert.Equal(t, n3.lastApplied, uint64(101))
+	assert.NotEqual(t, n3.snapshoter.Last(), nil)
+
+	manager.apply(context.Background(), []byte("2"))
+	time.Sleep(200 * time.Millisecond)
+	for _, n := range manager.nodes {
+		assert.Equal(t, n.lastIndex(), uint64(102))
+	}
+	manager.shutdown()
+}
+
+func TestFollowerRejectRequestVoteWhenHasLeader(t *testing.T) {
+	// let three raft nodes elected leader
+	// period apply log to the leader
+	// isolation a node's network
+	// manual increase the node's term (if enable prevote)
+	// restore the node's network
+	// apply log will not failed
+}
+
+func TestRetryReplicateAfterReplicateErrorAndRespToClient(t *testing.T) {
+	// isolation a node's network
+	// manual period reset the node electionTimer (to avoid become candidate)
+	// applied a log to leader
+	// restore  the node's network and sleep for a moment
+	// check node lastLogIndex
+}
+
+func TestMostLogsNodeBecomeLeader(t *testing.T) {
+	// manual store some logs to three nodes entryStore
+	// let they elect leader
+	// check who is the leader
+}
+
+func TestAutoRemoveConflictLogInFollower(t *testing.T) {
+	// let three raft nodes elected leader
+	// isolation the leader and apply a log to it
+	// waiting for the other two nodes elected leader
+	// check the last leader's log will be removed:W
 }
