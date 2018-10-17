@@ -7,6 +7,7 @@ import (
 	"time"
 	"github.com/dzdx/raft/store"
 	"io"
+	"github.com/dzdx/raft/util/wait"
 )
 
 type progressState int
@@ -26,6 +27,17 @@ type Progress struct {
 	commitIndex uint64
 	notifyCh    chan struct{}
 	lastContact time.Time
+	waitGroup   wait.Group
+}
+
+func (r *RaftNode) runReplication(p *Progress) {
+	p.waitGroup.Start(func() {
+		r.runHeartbeat(p)
+	})
+	p.waitGroup.Start(func() {
+		r.runLogReplication(p)
+	})
+	p.waitGroup.Wait()
 }
 
 func (r *RaftNode) runHeartbeat(p *Progress) {

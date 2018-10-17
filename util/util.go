@@ -4,6 +4,7 @@ import (
 	"time"
 	"math/rand"
 	"encoding/binary"
+	"github.com/dzdx/raft/raftpb"
 )
 
 func AsyncNotify(c chan struct{}) {
@@ -56,6 +57,13 @@ func Uint64ToBytes(i uint64) []byte {
 	var b = make([]byte, 8)
 	binary.BigEndian.PutUint64(b, i)
 	return b
+}
+func NodesToIDs(nodes []*raftpb.Node) map[string]struct{} {
+	serverIDs := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		serverIDs[n.ServerID] = struct{}{}
+	}
+	return serverIDs
 }
 
 func init() {

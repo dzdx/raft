@@ -27,6 +27,7 @@ message LogEntry {
     enum LogType {
         LogCommand = 0;
         LogNoop = 1;
+        LogConf = 2;
     }
     LogType logType = 4;
 }
@@ -58,6 +59,31 @@ message InstallSnapshotReq {
 message InstallSnapshotResp {
     uint64 term = 1;
     bool success = 2;
+}
+
+enum NodeRole {
+    Voter = 0;
+}
+
+message ConfChange {
+    enum Type {
+        AddNode = 0;
+        RemoveNode = 1;
+    }
+    Type type = 1;
+    NodeRole role = 2;
+    string serverID = 3;
+}
+
+
+message Node {
+    NodeRole role = 1;
+    string serverID = 2;
+}
+
+message Configuration {
+    uint64 index = 1;
+    repeated Node nodes = 2;
 }
 
 

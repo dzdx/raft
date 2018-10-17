@@ -3,6 +3,7 @@ package raft
 import (
 	"github.com/dzdx/raft/raftpb"
 	"context"
+	"fmt"
 )
 
 type RespWithError struct {
@@ -44,4 +45,23 @@ type DataFuture struct {
 type IndexFuture struct {
 	future
 	Index uint64
+}
+
+type ConfChangeFuture struct {
+	future
+	action *raftpb.ConfChange
+}
+
+func (f *ConfChangeFuture) String() string {
+	var t string
+	if f.action.Type == raftpb.ConfChange_RemoveNode {
+		t = "remove"
+	} else {
+		t = "add"
+	}
+	var r string
+	if f.action.Role == raftpb.NodeRole_Voter {
+		r = "voter"
+	}
+	return fmt.Sprintf("req: %s %s node %s", t, r, f.action.ServerID)
 }

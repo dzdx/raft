@@ -12,6 +12,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"errors"
 	"github.com/dzdx/raft/snapshot"
+	"fmt"
+	"github.com/golang/protobuf/proto"
 )
 
 var (
@@ -36,6 +38,8 @@ type RaftNode struct {
 	applyCh       chan ApplyFuture
 	committedCh   chan DataFuture
 	fsmSnapshotCh chan snapshotFuture
+
+	confChangeCh chan ConfChangeFuture
 
 	notifyApplyCh    chan struct{}
 	notifySnapshotCh chan struct{}
@@ -81,6 +85,8 @@ func (r *RaftNode) runFollower() {
 		case rpc := <-r.transport.RecvRPC():
 			r.processRPC(rpc)
 		case future := <-r.applyCh:
+			future.Respond(nil, ErrNotLeader)
+		case future := <-r.confChangeCh:
 			future.Respond(nil, ErrNotLeader)
 		}
 	}
@@ -143,7 +149,9 @@ func (r *RaftNode) processInstallSnapshot(rpc *transport.RPC, req *raftpb.Instal
 			snap.Cancel()
 			return
 		}
-		if err := r.fsm.Restore(r.ctx, snap.Content()); err != nil {
+		content := snap.Content()
+		r.extractConfiguration(content)
+		if err := r.fsm.Restore(r.ctx, content); err != nil {
 			r.logger.Error(err)
 			snap.Cancel()
 			return
@@ -223,9 +231,13 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 		}
 
 		// delete conflict log entries
-		if err := r.entryStore.DeleteEntries(req.Entries[newStart].Index, r.lastIndex()); err != nil {
+		deleteFromIndex := req.Entries[newStart].Index
+		if err := r.entryStore.DeleteEntries(deleteFromIndex, r.lastIndex()); err != nil {
 			r.logger.Errorf("delete entries failed: %s", err.Error())
 			return
+		}
+		if r.configurations.last.Index >= deleteFromIndex {
+			r.configurations.last = r.configurations.committed
 		}
 		// TODO maybe append entries failed
 
@@ -236,6 +248,16 @@ func (r *RaftNode) processAppendEntries(rpc *transport.RPC, req *raftpb.AppendEn
 		}
 		lastEntry := req.Entries[len(req.Entries)-1]
 		r.setLastLog(lastEntry.Term, lastEntry.Index)
+
+		for i := len(newEntries) - 1; i >= 0; i-- {
+			if newEntries[i].LogType == raftpb.LogEntry_LogConf {
+				confEntry := newEntries[i]
+				conf := &raftpb.Configuration{}
+				proto.Unmarshal(confEntry.Data, conf)
+				r.configurations.last = conf
+				break
+			}
+		}
 	}
 
 	if req.LeaderCommitIndex > 0 {
@@ -298,6 +320,24 @@ func (r *RaftNode) processRequestVote(rpc *transport.RPC, req *raftpb.RequestVot
 	return
 }
 
+func (r *RaftNode) serverIDs() map[string]struct{} {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return util.NodesToIDs(r.configurations.last.Nodes)
+}
+
+func (r *RaftNode) voters() map[string]struct{} {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	servers := make(map[string]struct{}, len(r.configurations.last.Nodes))
+	for _, conf := range r.configurations.last.Nodes {
+		if conf.Role == raftpb.NodeRole_Voter {
+			servers[conf.ServerID] = struct{}{}
+		}
+	}
+	return servers
+}
+
 func (r *RaftNode) startElection() <-chan *raftpb.RequestVoteResp {
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 	var lastLogIndex, lastLogTerm uint64
@@ -316,8 +356,9 @@ func (r *RaftNode) startElection() <-chan *raftpb.RequestVoteResp {
 		LastLogTerm:  lastLogTerm,
 		CandidateID:  r.localID,
 	}
-	respChan := make(chan *raftpb.RequestVoteResp, len(r.servers))
-	for s := range r.servers {
+	voters := r.voters()
+	respChan := make(chan *raftpb.RequestVoteResp, len(voters))
+	for s := range voters {
 		if s == r.localID {
 			r.setLastVoted(r.localID)
 			respChan <- &raftpb.RequestVoteResp{
@@ -344,7 +385,7 @@ func (r *RaftNode) startElection() <-chan *raftpb.RequestVoteResp {
 }
 
 func (r *RaftNode) quorumNodeSize() int {
-	return len(r.servers)/2 + 1
+	return len(r.voters())/2 + 1
 }
 
 func (r *RaftNode) runCandidate() {
@@ -370,6 +411,37 @@ func (r *RaftNode) runCandidate() {
 			return
 		case future := <-r.applyCh:
 			future.Respond(nil, ErrNotLeader)
+		case future := <-r.confChangeCh:
+			future.Respond(nil, ErrNotLeader)
+		}
+	}
+}
+
+func (r *RaftNode) ensureReplication() {
+	serverIDs := r.serverIDs()
+	for s := range serverIDs {
+		if _, ok := r.leaderState.followers[s]; s != r.localID && !ok {
+			ctx, cancelFunc := context.WithCancel(r.leaderState.ctx)
+			p := &Progress{
+				ctx:        ctx,
+				commitment: r.leaderState.commitment,
+				cancelFunc: cancelFunc,
+				serverID:   s,
+				nextIndex:  r.lastIndex() + 1,
+				notifyCh:   make(chan struct{}, 1),
+				state:      syncReplication,
+			}
+			r.leaderState.followers[s] = p
+			r.leaderState.waitGroup.Start(func() {
+				r.runReplication(p)
+			})
+		}
+	}
+	for s, p := range r.leaderState.followers {
+		if _, ok := serverIDs[s]; !ok {
+			p.cancelFunc()
+			p.waitGroup.Wait()
+			delete(r.leaderState.followers, s)
 		}
 	}
 }
@@ -377,41 +449,18 @@ func (r *RaftNode) runCandidate() {
 func (r *RaftNode) leaderCtx() func() {
 	r.leader = r.localID
 	ctx, cancelFunc := context.WithCancel(r.ctx)
-	commitment := newcommitment(r.servers)
-	followers := make(map[string]*Progress, len(r.servers)-1)
-	for s := range r.servers {
-		if s != r.localID {
-			ctx, cancelFunc := context.WithCancel(ctx)
-			followers[s] = &Progress{
-				ctx:        ctx,
-				commitment: commitment,
-				cancelFunc: cancelFunc,
-				serverID:   s,
-				nextIndex:  r.lastIndex() + 1,
-				notifyCh:   make(chan struct{}, 1),
-				state:      syncReplication,
-			}
-		}
-	}
+	commitment := newcommitment(r.voters())
 	leaderState := &leaderState{
 		ctx:                ctx,
 		cancelFunc:         cancelFunc,
 		commitment:         commitment,
-		followers:          followers,
+		followers:          make(map[string]*Progress),
 		waitGroup:          wait.Group{},
 		inflightingFutures: make(map[uint64]ApplyFuture),
 		dispatchedIndex:    r.lastIndex(),
 	}
-	for _, f := range leaderState.followers {
-		p := f
-		leaderState.waitGroup.Start(func() {
-			r.runHeartbeat(p)
-		})
-		leaderState.waitGroup.Start(func() {
-			r.runLogReplication(p)
-		})
-	}
 	r.leaderState = leaderState
+	r.ensureReplication()
 	noop := ApplyFuture{
 		Entry: &raftpb.LogEntry{
 			LogType: raftpb.LogEntry_LogNoop,
@@ -451,6 +500,75 @@ func (r *RaftNode) checkLeaderLease() {
 	}
 }
 
+func mergeConfiguration(oldConf *raftpb.Configuration, confChange *raftpb.ConfChange) (*raftpb.Configuration, error) {
+	newConf := &raftpb.Configuration{
+		Nodes: make([]*raftpb.Node, 0),
+	}
+	oldServerIDs := util.NodesToIDs(oldConf.Nodes)
+
+	switch confChange.Type {
+	case raftpb.ConfChange_AddNode:
+		if _, ok := oldServerIDs[confChange.ServerID]; ok {
+			return nil, fmt.Errorf("node %s exist", confChange.ServerID)
+		}
+		newConf.Nodes = append([]*raftpb.Node{}, oldConf.Nodes...)
+		newConf.Nodes = append(newConf.Nodes, &raftpb.Node{
+			Role:     confChange.Role,
+			ServerID: confChange.ServerID,
+		})
+
+	case raftpb.ConfChange_RemoveNode:
+		if _, ok := oldServerIDs[confChange.ServerID]; !ok {
+			return nil, fmt.Errorf("node %s not exist", confChange.ServerID)
+		}
+		var node *raftpb.Node
+		for _, node = range oldConf.Nodes {
+			if node.ServerID != confChange.ServerID {
+				newConf.Nodes = append(newConf.Nodes, node)
+			}
+		}
+	}
+	return newConf, nil
+}
+
+func (r *RaftNode) dispatchConfChange(future *ConfChangeFuture) {
+	if r.configurations.last.Index != r.configurations.committed.Index {
+		future.Respond(nil, fmt.Errorf("last conf change has not committed"))
+		return
+	}
+	if future.action.ServerID == r.localID && future.action.Type == raftpb.ConfChange_RemoveNode {
+		future.Respond(nil, fmt.Errorf("not allowed to remove leader"))
+		return
+	}
+
+	r.logger.Infof("start %s", future)
+
+	newConf, err := mergeConfiguration(r.configurations.last, future.action)
+	if err != nil {
+		future.Respond(nil, err)
+		return
+	}
+	data, _ := proto.Marshal(newConf)
+	confFuture := ApplyFuture{
+		Entry: &raftpb.LogEntry{
+			Data:    data,
+			LogType: raftpb.LogEntry_LogConf,
+		},
+	}
+	confFuture.init()
+	r.dispatch([]ApplyFuture{confFuture})
+	r.leaderState.waitGroup.Start(func() {
+		select {
+		case <-r.leaderState.ctx.Done():
+			r.logger.Infof("cancel %s", future)
+			future.Respond(nil, r.leaderState.ctx.Err())
+		case respWithError := <-confFuture.Response():
+			r.logger.Infof("finish %s", future)
+			future.Respond(respWithError.Resp, respWithError.Err)
+		}
+	})
+}
+
 func (r *RaftNode) runLeader() {
 	r.logger.Info("become leader")
 	defer r.leaderCtx()()
@@ -462,6 +580,8 @@ func (r *RaftNode) runLeader() {
 			r.checkLeaderLease()
 		case <-r.leaderState.ctx.Done():
 			return
+		case future := <-r.confChangeCh:
+			r.dispatchConfChange(&future)
 		case future := <-r.applyCh:
 			futures := []ApplyFuture{future}
 		L1:
@@ -476,6 +596,8 @@ func (r *RaftNode) runLeader() {
 			r.dispatch(futures)
 		case <-r.leaderState.commitment.commitCh:
 			r.leaderCommit(r.leaderState.commitment.commitIndex)
+		case rpc := <-r.transport.RecvRPC():
+			r.processRPC(rpc)
 		}
 	}
 }
@@ -487,6 +609,7 @@ func (r *RaftNode) leaderCommit(toIndex uint64) {
 	}
 	if entry.Term == r.currentTerm {
 		r.commitTo(toIndex)
+		commitIndex := r.commitIndex
 		r.leaderState.waitGroup.Start(func() {
 			select {
 			case <-r.leaderState.ctx.Done():
@@ -494,7 +617,7 @@ func (r *RaftNode) leaderCommit(toIndex uint64) {
 			case <-time.After(util.RandomDuration(r.config.CommitTimeout)):
 			}
 			for _, p := range r.leaderState.followers {
-				if p.commitIndex < r.commitIndex {
+				if p.commitIndex < commitIndex {
 					p.notify()
 				}
 			}
@@ -505,6 +628,9 @@ func (r *RaftNode) leaderCommit(toIndex uint64) {
 func (r *RaftNode) commitTo(toIndex uint64) {
 	if toIndex > r.commitIndex {
 		r.commitIndex = toIndex
+		if r.commitIndex > r.configurations.last.Index {
+			r.configurations.committed = r.configurations.last
+		}
 		r.logger.Debugf("commit log to %d", r.commitIndex)
 		util.AsyncNotify(r.notifyApplyCh)
 	}
@@ -531,13 +657,24 @@ func (r *RaftNode) dispatch(futures []ApplyFuture) {
 		r.stepdown()
 		return
 	}
+
 	lastLog := entries[len(entries)-1]
 	r.setLastLog(lastLog.Term, lastLog.Index)
-
 	r.leaderState.dispatchedIndex = dispatchedIndex
-	if len(entries) > 0 {
-		r.leaderState.commitment.SetMatchIndex(r.localID, r.lastIndex())
+
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].LogType == raftpb.LogEntry_LogConf {
+			confEntry := entries[i]
+			conf := &raftpb.Configuration{}
+			proto.Unmarshal(confEntry.Data, conf)
+			r.configurations.last = conf
+			r.leaderState.commitment.SetConfiguration(conf)
+			r.ensureReplication()
+			break
+		}
 	}
+
+	r.leaderState.commitment.SetMatchIndex(r.localID, r.lastIndex())
 	for _, p := range r.leaderState.followers {
 		p.notify()
 	}
@@ -571,21 +708,29 @@ func (r *RaftNode) run() {
 func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.ITransport, fsm IFsm, snapshoter snapshot.ISnapShotStore) *RaftNode {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	servers := make(map[string]struct{}, len(config.Servers))
+	conf := &raftpb.Configuration{
+		Nodes: make([]*raftpb.Node, 0, len(config.Servers)),
+	}
 	for _, s := range config.Servers {
-		servers[s] = struct{}{}
+		conf.Nodes = append(conf.Nodes, &raftpb.Node{
+			Role:     raftpb.NodeRole_Voter,
+			ServerID: s,
+		})
 	}
 	r := &RaftNode{
 		raftState: raftState{
 			state:   Follower,
 			localID: config.LocalID,
-			servers: servers,
-			leader:  None,
+			configurations: configurations{
+				last: conf,
+			},
+			leader: None,
 		},
 		config: config,
 
-		applyCh:     make(chan ApplyFuture, config.MaxInflightingEntries),
-		committedCh: make(chan DataFuture, config.MaxInflightingEntries),
+		applyCh:      make(chan ApplyFuture, config.MaxInflightingEntries),
+		committedCh:  make(chan DataFuture, config.MaxInflightingEntries),
+		confChangeCh: make(chan ConfChangeFuture, 1),
 
 		notifyApplyCh:    make(chan struct{}, 1),
 		notifySnapshotCh: make(chan struct{}, 1),
@@ -604,6 +749,7 @@ func NewRaftNode(config RaftConfig, storage store.IStore, transport transport.IT
 	}
 	r.restoreMeta()
 	r.restoreSnapshot()
+	r.replayLogs()
 	r.setupLogger()
 	r.waitGroup.Start(transport.Serve)
 	r.waitGroup.Start(r.runFSM)

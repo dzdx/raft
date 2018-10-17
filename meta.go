@@ -23,6 +23,11 @@ const (
 
 const None string = ""
 
+type configurations struct {
+	last      *raftpb.Configuration
+	committed *raftpb.Configuration
+}
+
 type raftState struct {
 	lastVotedFor  string
 	lastVotedTerm uint64
@@ -34,10 +39,11 @@ type raftState struct {
 	lastApplied uint64
 	commitIndex uint64
 
+	configurations configurations
+
 	state State
 
 	localID string
-	servers map[string]struct{}
 
 	leader            string
 	lastContactLeader time.Time

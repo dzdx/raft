@@ -50,6 +50,8 @@ func (r *RaftNode) batchApplyToFSM() {
 				indexFuture.Respond(nil, nil)
 			case raftpb.LogEntry_LogCommand:
 				applyFutures = append(applyFutures, *dataFuture)
+			case raftpb.LogEntry_LogConf:
+				indexFuture.Respond(nil, nil)
 			}
 		}
 		r.waitGroup.Start(func() {

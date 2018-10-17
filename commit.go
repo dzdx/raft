@@ -4,6 +4,7 @@ import (
 	"sync"
 	"github.com/dzdx/raft/util"
 	"sort"
+	"github.com/dzdx/raft/raftpb"
 )
 
 type commitment struct {
@@ -25,16 +26,30 @@ func newcommitment(servers map[string]struct{}) *commitment {
 	return c
 }
 
-func (c *commitment)GetMatchIndex(serverID string) uint64{
+func (c *commitment) GetMatchIndex(serverID string) uint64 {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	return c.matchIndexes[serverID]
 }
 
+func (c *commitment) SetConfiguration(conf *raftpb.Configuration) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	matchIndexes := make(map[string]uint64)
+	for _, node := range conf.Nodes {
+		if node.Role == raftpb.NodeRole_Voter {
+			matchIndexes[node.ServerID] = c.matchIndexes[node.ServerID]
+		}
+	}
+	c.matchIndexes = matchIndexes
+}
+
 func (c *commitment) SetMatchIndex(serverID string, matchIndex uint64) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-
+	if _, ok := c.matchIndexes[serverID]; !ok {
+		return
+	}
 	c.matchIndexes[serverID] = matchIndex
 	oldCommitIndex := c.commitIndex
 	c.updateCommitIndex()

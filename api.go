@@ -69,10 +69,44 @@ func (r *RaftNode) Snapshot() {
 	util.AsyncNotify(r.notifySnapshotCh)
 }
 
-func (r *RaftNode) AddServer(serverID string) {
-
+func (r *RaftNode) AddVoter(ctx context.Context, serverID string) error {
+	future := ConfChangeFuture{
+		action: &raftpb.ConfChange{
+			Type:     raftpb.ConfChange_AddNode,
+			ServerID: serverID,
+		},
+	}
+	future.init()
+	select {
+	case r.confChangeCh <- future:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case respWithError := <-future.Response():
+		return respWithError.Err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-func (r *RaftNode) RemoveServer(serverID string) {
-
+func (r *RaftNode) RemoveNode(ctx context.Context, serverID string) error {
+	future := ConfChangeFuture{
+		action: &raftpb.ConfChange{
+			Type:     raftpb.ConfChange_RemoveNode,
+			ServerID: serverID,
+		},
+	}
+	future.init()
+	select {
+	case r.confChangeCh <- future:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case respWithError := <-future.Response():
+		return respWithError.Err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
